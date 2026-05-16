@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Civ VI OBS Vertical Overlay</title>
+  <style>
+    :root {
+      --overlay-width: 420px;
+      --overlay-height: 920px;
+      --gold: #d8ad52;
+      --gold-bright: #f5dc91;
+      --gold-dark: #7a5520;
+      --blue: #102f4d;
+      --blue-deep: #071827;
+      --parchment: #ead8b0;
+      --panel: rgba(9, 24, 39, 0.9);
+      --panel-soft: rgba(234, 216, 176, 0.12);
+      --text: #fff7df;
+      --muted: #dec995;
+      --shadow: rgba(0, 0, 0, 0.56);
+      --font-main: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+      --font-title: Georgia, "Times New Roman", "STSong", serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: var(--overlay-width);
+      height: var(--overlay-height);
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      font-family: var(--font-main);
+      color: var(--text);
+    }
+
+    body { position: relative; }
+
+    .overlay {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: var(--overlay-width);
+      height: var(--overlay-height);
+      display: grid;
+      grid-template-rows: 280px 1fr;
+      gap: 14px;
+      pointer-events: none;
+    }
+
+    .panel {
+      position: relative;
+      overflow: hidden;
+      border: 2px solid rgba(245, 220, 145, 0.9);
+      background:
+        radial-gradient(circle at 18% 0%, rgba(245, 220, 145, 0.16), transparent 36%),
+        linear-gradient(145deg, rgba(255,255,255,0.06), transparent 26%),
+        linear-gradient(180deg, rgba(16, 54, 86, 0.94), rgba(7, 23, 38, 0.92));
+      box-shadow:
+        0 18px 36px rgba(0, 0, 0, 0.42),
+        inset 0 0 26px rgba(245, 220, 145, 0.08),
+        0 0 0 1px rgba(92, 63, 20, 0.68);
+      clip-path: polygon(
+        18px 0,
+        calc(100% - 18px) 0,
+        100% 18px,
+        100% calc(100% - 18px),
+        calc(100% - 18px) 100%,
+        18px 100%,
+        0 calc(100% - 18px),
+        0 18px
+      );
+    }
+
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border: 1px solid rgba(245, 220, 145, 0.34);
+      clip-path: inherit;
+      pointer-events: none;
+      z-index: 3;
+    }
+
+    .panel::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(30deg, rgba(255,255,255,0.035) 12%, transparent 12.5%, transparent 87%, rgba(255,255,255,0.035) 87.5%),
+        linear-gradient(150deg, rgba(255,255,255,0.028) 12%, transparent 12.5%, transparent 87%, rgba(255,255,255,0.028) 87.5%);
+      background-size: 42px 72px;
+      opacity: 0.28;
+      pointer-events: none;
+    }
+
+    .glint {
+      position: absolute;
+      inset: -40% -30%;
+      background: linear-gradient(110deg, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%);
+      transform: translateX(-62%);
+      animation: glint 8.5s ease-in-out infinite;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    @keyframes glint {
+      0%, 62% { transform: translateX(-62%); }
+      82%, 100% { transform: translateX(62%); }
+    }
+
+    .panel-inner {
+      position: relative;
+      z-index: 2;
+      height: 100%;
+      padding: 15px 16px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      min-height: 31px;
+    }
+
+    .title {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-title);
+      color: var(--gold-bright);
+      font-size: 22px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      text-shadow: 0 2px 0 rgba(0,0,0,0.55), 0 0 14px rgba(245,220,145,0.28);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 0 1 auto;
+    }
+
+    .emblem {
+      width: 31px;
+      height: 31px;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--gold);
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(245, 220, 145, 0.28), rgba(9, 35, 57, 0.8));
+      box-shadow: 0 0 16px rgba(245, 220, 145, 0.22);
+      font-size: 16px;
+    }
+
+    .pill {
+      flex: 0 0 142px;
+      width: 142px;
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid rgba(245, 220, 145, 0.42);
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.22);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 26px;
+      letter-spacing: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      text-align: center;
+    }
+
+    .news-box,
+    .section-box {
+      position: relative;
+      border: 1px solid rgba(245, 220, 145, 0.38);
+      background:
+        linear-gradient(180deg, rgba(234, 216, 176, 0.13), rgba(0, 0, 0, 0.14)),
+        rgba(3, 13, 22, 0.42);
+      box-shadow: inset 0 0 16px rgba(245, 220, 145, 0.045);
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .news-box::before,
+    .section-box::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--gold-bright), rgba(245,220,145,0.08));
+    }
+
+    .news-box {
+      flex: 1;
+      padding: 10px 11px;
+      display: flex;
+      align-items: stretch;
+    }
+
+    .news-viewport {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .news-text {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: #fff4d6;
+      font-size: 18px;
+      line-height: 1.26;
+      font-weight: 700;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.68);
+      overflow: hidden;
+    }
+
+    .news-text.scrolling {
+      animation: newsScroll 26s linear infinite;
+    }
+
+    .news-item {
+      min-height: 56px;
+      padding: 7px 9px 7px 10px;
+      border-left: 3px solid rgba(245, 220, 145, 0.76);
+      background: rgba(255, 255, 255, 0.055);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: 9px;
+      overflow: hidden;
+    }
+
+    .news-icons {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .news-icon {
+      width: 38px;
+      height: 38px;
+      border: 1px solid rgba(245, 220, 145, 0.82);
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.32);
+      object-fit: cover;
+      box-shadow: 0 0 10px rgba(245, 220, 145, 0.2);
+    }
+
+    .news-arrow {
+      color: var(--gold-bright);
+      font-size: 15px;
+      margin: 0 1px;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+    }
+
+    .news-body {
+      min-width: 0;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .news-item.no-icons {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    @keyframes newsScroll {
+      0%, 12% { transform: translateY(0); }
+      100% { transform: translateY(-50%); }
+    }
+
+    .news-text:not(.scrolling) .news-item {
+      min-height: 0;
+      font-size: 18px;
+    }
+
+    .news-text:not(.scrolling) .news-body {
+      -webkit-line-clamp: 2;
+    }
+
+    .qa-panel .panel-inner { padding-bottom: 14px; }
+
+    .qa-stack {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 150px minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .section-box {
+      padding: 10px 12px;
+      min-height: 0;
+    }
+
+    .label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      color: var(--gold-bright);
+      font-family: var(--font-title);
+      font-size: 17px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .label::before {
+      content: "◆";
+      color: var(--gold);
+      font-size: 13px;
+    }
+
+    .question-meta {
+      margin: -1px 0 5px;
+      color: rgba(245, 220, 145, 0.86);
+      font-size: 14px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+    }
+
+    .question-text {
+      color: #fff0c8;
+      font-size: 24px;
+      line-height: 1.26;
+      font-weight: 700;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.66);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .answer-text {
+      color: #fffdf5;
+      font-size: 19px;
+      line-height: 1.36;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.56);
+      display: -webkit-box;
+      -webkit-line-clamp: 14;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .status-line {
+      margin-top: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: rgba(247, 231, 189, 0.78);
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-line::before,
+    .status-line::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(245, 220, 145, 0.75));
+    }
+
+    .status-line::after {
+      background: linear-gradient(90deg, rgba(245, 220, 145, 0.75), transparent);
+    }
+
+    .corner-accent {
+      position: absolute;
+      width: 52px;
+      height: 52px;
+      border-color: rgba(245, 220, 145, 0.82);
+      border-style: solid;
+      z-index: 4;
+      pointer-events: none;
+      filter: drop-shadow(0 4px 8px rgba(0,0,0,0.4));
+    }
+
+    .corner-accent.tl { top: 9px; left: 9px; border-width: 2px 0 0 2px; }
+    .corner-accent.tr { top: 9px; right: 9px; border-width: 2px 2px 0 0; }
+    .corner-accent.bl { bottom: 9px; left: 9px; border-width: 0 0 2px 2px; }
+    .corner-accent.br { bottom: 9px; right: 9px; border-width: 0 2px 2px 0; }
+
+    .fade-update { animation: fadeUpdate 340ms ease-out both; }
+
+    @keyframes fadeUpdate {
+      from { opacity: 0; transform: translateY(6px); filter: blur(2px); }
+      to { opacity: 1; transform: translateY(0); filter: blur(0); }
+    }
+
+    @media (max-width: 360px) {
+      :root { --overlay-width: 360px; --overlay-height: 790px; }
+      .overlay { gap: 12px; grid-template-rows: 242px 1fr; }
+      .title { font-size: 20px; }
+      .news-text { font-size: 16px; }
+      .news-icon { width: 34px; height: 34px; }
+      .question-text { font-size: 22px; }
+      .answer-text { font-size: 17px; line-height: 1.34; }
+      .question-meta { font-size: 13px; }
+      .pill { flex-basis: 132px; width: 132px; font-size: 11px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="overlay">
+    <section class="panel news-panel">
+      <div class="glint"></div>
+      <div class="corner-accent tl"></div>
+      <div class="corner-accent tr"></div>
+      <div class="corner-accent bl"></div>
+      <div class="corner-accent br"></div>
+      <div class="panel-inner">
+        <div class="title-row">
+          <div class="title"><span class="emblem">✦</span><span id="newsTitle">世界议会快报</span></div>
+          <div class="pill" id="gameMeta">游戏信息实时更新</div>
+        </div>
+        <div class="news-box">
+          <div class="news-viewport">
+            <div class="news-text" id="newsText">
+              <div class="news-item">等待文明6信息处理程序推送实时新闻……</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel qa-panel">
+      <div class="glint"></div>
+      <div class="corner-accent tl"></div>
+      <div class="corner-accent tr"></div>
+      <div class="corner-accent bl"></div>
+      <div class="corner-accent br"></div>
+      <div class="panel-inner">
+        <div class="title-row">
+          <div class="title"><span class="emblem">?</span><span id="qaTitle">弹幕问政厅</span></div>
+          <div class="pill" id="aiStatus">询问 AI 当局游戏</div>
+        </div>
+
+        <div class="qa-stack">
+          <div class="section-box">
+            <div class="label">当前问题</div>
+            <div class="question-meta" id="questionMeta">等待弹幕 ID</div>
+            <div class="question-text" id="questionText">等待观众提问……</div>
+          </div>
+
+          <div class="section-box">
+            <div class="label">AI 回答</div>
+            <div class="answer-text" id="answerText">AI 顾问会在这里给出简洁解释、战况分析或下一步建议。</div>
+          </div>
+        </div>
+
+        <div class="status-line" id="statusLine">CIVILIZATION VI LIVE OVERLAY</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const DATA_URL = "http://127.0.0.1:8787/overlay.json";
+    const POLL_INTERVAL_MS = 1000;
+    const MAX_BARRAGE = 4;
+    const MAX_NEWS_ROWS = 3;
+    const VISIBLE_NEWS_ROWS = 3;
+    const QA_MIN_DISPLAY_MS = 9000;
+    const QA_THINKING_MAX_DISPLAY_MS = 25000;
+    const QA_PENDING_LIMIT = 6;
+
+    const defaultState = {
+      newsTitle: "世界议会快报",
+      qaTitle: "弹幕问政厅",
+      meta: "游戏信息实时更新",
+      aiStatus: "询问 AI 当局游戏",
+      status: "CIVILIZATION VI LIVE OVERLAY",
+      newsText: "等待文明6信息处理程序推送实时新闻……",
+      news: ["等待文明6信息处理程序推送实时新闻……"],
+      barrage: ["这把走科技还是文化？", "首都位置还可以吗？", "要不要抢奇观？"],
+      questionMeta: "弹幕 · 观众",
+      question: "这局前期应该优先铺城还是先造兵？",
+      answer: "如果周围威胁不高，优先侦察 + 铺城；若邻居距离很近，则补 2–3 个远程单位，避免被早战打乱节奏。"
+    };
+
+    let state = structuredClone(defaultState);
+    let visibleQa = null;
+    let pendingQa = [];
+    let qaTimer = null;
+    let lastQaShownAt = 0;
+    let lastNewsSignature = "";
+    const $ = (id) => document.getElementById(id);
+
+    function escapeHTML(input) {
+      return String(input ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function addUpdateAnimation(el) {
+      if (!el) return;
+      el.classList.remove("fade-update");
+      void el.offsetWidth;
+      el.classList.add("fade-update");
+    }
+
+    function normalizeNewsText(payload) {
+      if (typeof payload.newsText === "string" && payload.newsText.trim()) return payload.newsText.trim();
+      if (typeof payload.news === "string" && payload.news.trim()) return payload.news.trim();
+      if (Array.isArray(payload.news) && payload.news.length) {
+        return payload.news.map((item) => {
+          if (typeof item === "string") return item;
+          const type = item.type ? `${item.type}：` : "";
+          return `${type}${item.text || item.message || ""}`;
+        }).filter(Boolean).join("；");
+      }
+      return state.newsText || defaultState.newsText;
+    }
+
+    function normalizeNewsItems(payload, fallbackText) {
+      const rawItems = [];
+      const pushText = (value, icons = []) => {
+        if (typeof value !== "string") return;
+        value.split(/\r?\n|；/).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+          rawItems.push({ text: item, icons });
+        });
+      };
+      if (Array.isArray(payload.news)) {
+        payload.news.forEach((item) => {
+          if (typeof item === "string") pushText(item);
+          else if (item && typeof item === "object") {
+            const type = item.type ? `${item.type}：` : "";
+            pushText(`${type}${item.text || item.message || ""}`, Array.isArray(item.icons) ? item.icons : []);
+          }
+        });
+      }
+      if (!rawItems.length) pushText(fallbackText);
+      if (!rawItems.length) pushText(defaultState.newsText);
+
+      const seen = new Set();
+      const unique = [];
+      rawItems.forEach((item) => {
+        const key = `${item.text}|${(item.icons || []).map((icon) => icon.url || icon.label || "").join(",")}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        unique.push(item);
+      });
+      return unique.slice(-MAX_NEWS_ROWS);
+    }
+
+    function normalizeBarrage(barrage) {
+      if (Array.isArray(barrage)) return barrage.slice(-MAX_BARRAGE).map(String);
+      if (typeof barrage === "string" && barrage.trim()) return [barrage.trim()];
+      return state.barrage || defaultState.barrage;
+    }
+
+    function normalizeQuestionMeta(payload) {
+      if (typeof payload.questionMeta === "string" && payload.questionMeta.trim()) return payload.questionMeta.trim();
+      if (typeof payload.uname === "string" && payload.uname.trim()) return `弹幕 · ${payload.uname.trim()}`;
+      const barrage = normalizeBarrage(payload.barrage);
+      const latest = barrage[barrage.length - 1];
+      if (latest) {
+        const splitIndex = latest.indexOf("：");
+        if (splitIndex > 0) return `弹幕 · ${latest.slice(0, splitIndex)}`;
+        return `弹幕 · ${latest}`;
+      }
+      return state.questionMeta || defaultState.questionMeta;
+    }
+
+    function render(next = {}) {
+      const nextNewsText = normalizeNewsText(next);
+      const nextNewsItems = normalizeNewsItems(next, nextNewsText);
+      const nextQuestionMeta = normalizeQuestionMeta(next);
+      const previous = { ...state };
+      state = { ...state, ...next, newsText: nextNewsText, news: nextNewsItems, questionMeta: nextQuestionMeta };
+
+      $("newsTitle").textContent = state.newsTitle || defaultState.newsTitle;
+      $("qaTitle").textContent = state.qaTitle || defaultState.qaTitle;
+      $("gameMeta").textContent = state.meta || defaultState.meta;
+      $("statusLine").textContent = state.status || defaultState.status;
+
+      renderNewsItems(state.news || [state.newsText || defaultState.newsText]);
+      queueOrRenderQa(qaFromState(state));
+    }
+
+    function renderNewsItems(items) {
+      const newsItems = Array.isArray(items) && items.length ? items : [{ text: defaultState.newsText, icons: [] }];
+      const normalizedItems = newsItems.map(normalizeNewsItem).filter((item) => item.text);
+      const signature = JSON.stringify(normalizedItems);
+      const el = $("newsText");
+      if (!el || signature === lastNewsSignature) return;
+      lastNewsSignature = signature;
+      const shouldScroll = false;
+      const rendered = shouldScroll ? [...normalizedItems, ...normalizedItems] : normalizedItems;
+      el.classList.toggle("scrolling", shouldScroll);
+      el.innerHTML = rendered.map(renderNewsItem).join("");
+    }
+
+    function normalizeNewsItem(item) {
+      if (typeof item === "string") return { text: item, icons: [] };
+      if (!item || typeof item !== "object") return { text: "", icons: [] };
+      return {
+        text: String(item.text || item.message || ""),
+        icons: Array.isArray(item.icons) ? item.icons : []
+      };
+    }
+
+    function renderNewsItem(item) {
+      const icons = (item.icons || []).filter((icon) => icon && icon.url).slice(0, 2);
+      const iconHtml = icons.length ? `
+        <div class="news-icons">
+          ${icons.map((icon, index) => `
+            ${index ? '<span class="news-arrow">→</span>' : ''}
+            <img class="news-icon" src="${escapeHTML(icon.url)}" alt="${escapeHTML(icon.label || '')}" />
+          `).join("")}
+        </div>
+      ` : "";
+      return `
+        <div class="news-item ${icons.length ? "" : "no-icons"}">
+          ${iconHtml}
+          <div class="news-body">${escapeHTML(item.text)}</div>
+        </div>
+      `;
+    }
+
+    function updateText(id, value, previousValue, animate = true) {
+      const el = $(id);
+      if (!el || value === previousValue) return;
+      el.textContent = value;
+      if (animate) addUpdateAnimation(el);
+    }
+
+    function qaFromState(value) {
+      return {
+        aiStatus: value.aiStatus || defaultState.aiStatus,
+        questionMeta: value.questionMeta || defaultState.questionMeta,
+        question: value.question || defaultState.question,
+        answer: value.answer || defaultState.answer
+      };
+    }
+
+    function qaKey(value) {
+      return `${value.questionMeta}\n${value.question}`;
+    }
+
+    function isDefaultQa(value) {
+      return !value || (
+        value.question === defaultState.question &&
+        value.answer === defaultState.answer
+      );
+    }
+
+    function isThinkingQa(value) {
+      return Boolean(value && String(value.answer || "").includes("思考中"));
+    }
+
+    function isStaleThinkingQa(value) {
+      return isThinkingQa(value) && performance.now() - lastQaShownAt >= QA_THINKING_MAX_DISPLAY_MS;
+    }
+
+    function queueOrRenderQa(nextQa) {
+      const nextKey = qaKey(nextQa);
+      const visibleKey = visibleQa ? qaKey(visibleQa) : "";
+      if (nextKey === visibleKey) {
+        const contentChanged = !visibleQa ||
+          nextQa.answer !== visibleQa.answer ||
+          nextQa.aiStatus !== visibleQa.aiStatus;
+        renderQa(nextQa, { resetTimer: contentChanged });
+        return;
+      }
+
+      const elapsed = performance.now() - lastQaShownAt;
+      if (isDefaultQa(visibleQa) || ((!isThinkingQa(visibleQa) || isStaleThinkingQa(visibleQa)) && elapsed >= QA_MIN_DISPLAY_MS)) {
+        renderQa(nextQa);
+        return;
+      }
+
+      const existingIndex = pendingQa.findIndex((item) => qaKey(item) === nextKey);
+      if (existingIndex >= 0) pendingQa[existingIndex] = nextQa;
+      else pendingQa.push(nextQa);
+      if (pendingQa.length > QA_PENDING_LIMIT) pendingQa = pendingQa.slice(-QA_PENDING_LIMIT);
+      scheduleQaFlush();
+    }
+
+    function scheduleQaFlush() {
+      if (qaTimer || !pendingQa.length) return;
+      const elapsed = performance.now() - lastQaShownAt;
+      const delay = isThinkingQa(visibleQa) ? 1000 : Math.max(QA_MIN_DISPLAY_MS - elapsed, 0);
+      qaTimer = window.setTimeout(() => {
+        qaTimer = null;
+        flushPendingQa();
+      }, delay);
+    }
+
+    function flushPendingQa() {
+      if (!pendingQa.length) return;
+      if (isThinkingQa(visibleQa) && !isStaleThinkingQa(visibleQa)) {
+        scheduleQaFlush();
+        return;
+      }
+      const elapsed = performance.now() - lastQaShownAt;
+      if (elapsed < QA_MIN_DISPLAY_MS) {
+        scheduleQaFlush();
+        return;
+      }
+      renderQa(pendingQa.shift(), { resetTimer: true });
+      if (pendingQa.length) scheduleQaFlush();
+    }
+
+    function renderQa(nextQa, options = {}) {
+      const resetTimer = options.resetTimer ?? true;
+      const previous = visibleQa || {};
+      visibleQa = nextQa;
+      if (resetTimer) lastQaShownAt = performance.now();
+      updateText("aiStatus", nextQa.aiStatus, previous.aiStatus, false);
+      updateText("questionMeta", nextQa.questionMeta, previous.questionMeta, false);
+      updateText("questionText", nextQa.question, previous.question);
+      updateText("answerText", nextQa.answer, previous.answer);
+    }
+
+    function update(payload) {
+      if (!payload || typeof payload !== "object") return;
+      render(payload);
+    }
+
+    window.CivOverlay = { update, getState: () => structuredClone(state) };
+
+    window.addEventListener("message", (event) => {
+      const data = event.data;
+      if (data && data.type === "civ-overlay-update") update(data.payload);
+      else if (data && typeof data === "object") update(data);
+    });
+
+    try {
+      const channel = new BroadcastChannel("civ6-overlay");
+      channel.onmessage = (event) => update(event.data);
+    } catch (err) {
+      console.warn("BroadcastChannel unavailable", err);
+    }
+
+    async function pollData() {
+      if (!DATA_URL) return;
+      try {
+        const res = await fetch(`${DATA_URL}${DATA_URL.includes("?") ? "&" : "?"}_=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        update(data);
+      } catch (err) {
+        console.warn("Overlay polling failed", err);
+      }
+    }
+
+    render(defaultState);
+    if (DATA_URL) {
+      pollData();
+      setInterval(pollData, POLL_INTERVAL_MS);
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key.toLowerCase() !== "d") return;
+      update({
+        meta: "143T · 工业时代",
+        newsText: "罗马谴责我方边境扩张，战争风险上升；前线弩手完成升级，可以准备推进；大金字塔剩余建造时间不足，建议立即砍树加速。",
+        barrage: ["这波能打吗？", "别忘了换政策卡", "AI 又来谴责了", "先升级弩手！"],
+        questionMeta: "弹幕 · GLaYD",
+        question: "现在宣战会不会影响后面的外交胜利？",
+        answer: "会有外交惩罚，但如果能快速拿下关键城市并停战，收益可能更高。建议先确认盟友关系、宜居度、忠诚压力，再决定是否开战。",
+        aiStatus: "AI 顾问团 · 战况评估完成",
+        status: "LIVE · 143T · DECISION WINDOW"
+      });
+    });
+  </script>
+</body>
+</html>

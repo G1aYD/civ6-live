@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Local secrets and machine-specific paths
+.env
+.env.*
+!.env.example
+config.json
+config.local.json
+
+# Generated Civ/OBS/runtime data
+obs/
+run_logs/
+test_logs/
+*.Civ6Save
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
