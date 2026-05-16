@@ -68,7 +68,30 @@ BILIBILI_UID=...
 BILIBILI_BUVID=...
 CIV6_TEAM_1_NAME=蓝队
 CIV6_TEAM_2_NAME=红队
+CIV6_BILI_ROOM=https://live.bilibili.com/8555868
+CIV6_QUESTION_MODE=bang
+CIV6_ANSWER_CHAR_LIMIT=300
+CIV6_GIFT_QUESTION_COST=100
+CIV6_HISTORY_INTERVAL=1
+CIV6_NO_HISTORY_POLL=false
+CIV6_WEBSOCKET_DANMAKU=false
 ```
+
+For normal live streaming, use the preset PowerShell launcher instead of passing every argument:
+
+```powershell
+.\scripts\live.ps1
+```
+
+Useful temporary overrides:
+
+```powershell
+.\scripts\live.ps1 -Room https://live.bilibili.com/8555868 -Debug
+.\scripts\live.ps1 -NoLlm -NoGiftGate
+```
+
+The preset enables the OBS browser overlay, gift-credit question charging, `!`/`！` question mode,
+and a 300-character answer limit. Edit `.env` for values you reuse often.
 
 To listen to Bilibili live danmaku and update an OBS text source:
 
@@ -87,6 +110,15 @@ python -m civ6intel.cli bili-obs --room https://live.bilibili.com/8555868 --ques
 
 Use `--websocket-danmaku` only if lower latency matters more than complete usernames. Use
 `--no-history-poll` to disable the history fallback entirely.
+
+If BUVID/cookie makes WebSocket danmaku usernames reliable, disable history polling to reduce
+background polling:
+
+```text
+CIV6_NO_HISTORY_POLL=true
+```
+
+The preset launcher will automatically enable WebSocket danmaku when history polling is disabled.
 
 In OBS, add a Text source, enable "Read from file", and select `C:\Git\civ6interaction\obs\answer.txt`.
 
@@ -135,16 +167,17 @@ python -m civ6intel.cli bili-obs --room https://live.bilibili.com/8555868 --gift
 Use `--gift-id` when you know the numeric gift id, or `--min-gift-value` to allow any gift at/above a coin value. Super chats are accepted by default because they are already paid messages; add `--no-super-chat` to disable that.
 `BILIBILI_COOKIE` is optional, but it can help keep user ids/names available if Bilibili masks anonymous live-message data.
 
-For coin-based paid questions, keep a persistent gift ledger and charge 100 coin per danmaku
-question:
+For coin-based paid questions, keep a persistent gift ledger and charge the configured coin value per danmaku
+question. Set `CIV6_GIFT_QUESTION_COST` in `.env` or pass `--gift-question-cost`:
 
 ```powershell
 python -m civ6intel.cli bili-obs --room https://live.bilibili.com/8555868 --overlay-json obs\overlay.json --serve-overlay --require-gift-credit --gift-question-cost 100 --gift-obs-text obs\gifts.txt
 ```
 
 This writes every gift to `obs\gifts.jsonl`, user totals/spent balance to `obs\gift_totals.json`,
-and an OBS-friendly status file to `obs\gifts.txt`. Add `obs\gifts.txt` as a separate OBS Text
-source with "Read from file" enabled.
+and an OBS-friendly status file to `obs\gifts.txt`. The status file shows the current
+`1问 = N coin` conversion and recalculates remaining questions from the configured cost.
+Add `obs\gifts.txt` as a separate OBS Text source with "Read from file" enabled.
 
 For a bounded live test during a turn transition:
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from .state import load_snapshot
 
 
 DEFAULT_ANSWER_CHAR_LIMIT = 300
+DEFAULT_GIFT_QUESTION_COST = 100
+GIFT_COIN_PER_BATTERY = 100
 OVERLAY_FINAL_ANSWER_POLL_GRACE_SECONDS = 1.5
 
 
@@ -104,7 +107,7 @@ class GiftLedger:
         log_path: Path,
         totals_path: Path,
         obs_text: Path | None,
-        question_cost: int = 100,
+        question_cost: int = DEFAULT_GIFT_QUESTION_COST,
     ) -> None:
         self.log_path = log_path
         self.totals_path = totals_path
@@ -219,7 +222,7 @@ class GiftLedger:
     def write_obs_text(self) -> None:
         if self.obs_text is None:
             return
-        lines = [self.latest_line]
+        lines = [self.latest_line, f"规则：1问 = {format_gift_question_cost(self.question_cost)}"]
         top = self.top_accounts(limit=len(self.accounts))
         if top:
             lines.append("可提问：")
@@ -238,6 +241,8 @@ class GiftLedger:
             if balance <= 0:
                 continue
             credits = balance // self.question_cost
+            if credits < 1:
+                continue
             lines.append(f"{account.get('uname') or account.get('uid')} {credits}问")
         return lines
 
@@ -286,13 +291,14 @@ async def run_bilibili_obs_bot(
     history_interval: float = 1.0,
     websocket_danmaku: bool = False,
     require_gift_credit: bool = False,
-    gift_question_cost: int = 100,
+    gift_question_cost: int | None = None,
     gift_log: Path = Path("obs/gifts.jsonl"),
     gift_totals: Path = Path("obs/gift_totals.json"),
     gift_obs_text: Path | None = Path("obs/gifts.txt"),
     answer_char_limit: int = DEFAULT_ANSWER_CHAR_LIMIT,
 ) -> None:
     load_env_file(env_file)
+    gift_question_cost = resolve_gift_question_cost(gift_question_cost)
     resolved_room_id: int | None = None
     try:
         resolved_room_id = resolve_room_id(room)
@@ -645,6 +651,26 @@ def answer_question_with_llm(
         env_file=env_file,
         timeout=llm_timeout,
     ).text
+
+
+def resolve_gift_question_cost(value: int | None) -> int:
+    if value is not None and value > 0:
+        return value
+    env_value = os.getenv("CIV6_GIFT_QUESTION_COST", "").strip()
+    if env_value:
+        try:
+            return max(int(env_value), 1)
+        except ValueError:
+            print(
+                f"warning: invalid CIV6_GIFT_QUESTION_COST={env_value!r}; "
+                f"using {DEFAULT_GIFT_QUESTION_COST}"
+            )
+    return DEFAULT_GIFT_QUESTION_COST
+
+
+def format_gift_question_cost(coin_cost: int) -> str:
+    batteries = coin_cost / GIFT_COIN_PER_BATTERY
+    return f"{batteries:g}电池"
 
 
 def danmaku_question(event: DanmakuEvent) -> ChatQuestion:

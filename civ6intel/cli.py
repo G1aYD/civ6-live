@@ -100,7 +100,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Only accept normal danmaku questions from users with gift coin balance.",
     )
-    bili_parser.add_argument("--gift-question-cost", type=int, default=100, help="Gift coin cost for one danmaku question.")
+    bili_parser.add_argument(
+        "--gift-question-cost",
+        type=int,
+        default=None,
+        help="Gift coin cost for one danmaku question. Defaults to CIV6_GIFT_QUESTION_COST or 100.",
+    )
     bili_parser.add_argument("--gift-log", default="obs/gifts.jsonl", help="JSONL log of every received gift.")
     bili_parser.add_argument("--gift-totals", default="obs/gift_totals.json", help="Persistent gift coin totals by user.")
     bili_parser.add_argument("--gift-obs-text", default="obs/gifts.txt", help="UTF-8 gift status text file for OBS.")
