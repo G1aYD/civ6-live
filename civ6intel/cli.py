@@ -17,7 +17,7 @@ from .overlay_state import run_overlay_json
 from .query import answer_question, context_json
 from .save_reader import read_latest_save_summary
 from .state import load_snapshot
-from .stream_bot import run_bilibili_obs_bot
+from .stream_bot import DEFAULT_ANSWER_CHAR_LIMIT, run_bilibili_obs_bot, sanitize_llm_output
 from .watch import run_watch
 
 
@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     llm_ask_parser.add_argument("--env-file", default=".env", help="File containing OPENAI_API_KEY.")
     llm_ask_parser.add_argument("--timeout", type=float, default=60.0, help="OpenAI request timeout in seconds.")
+    llm_ask_parser.add_argument("--answer-char-limit", type=int, default=DEFAULT_ANSWER_CHAR_LIMIT, help="Maximum characters printed for one LLM answer.")
     llm_ask_parser.add_argument("--dry-run", action="store_true", help="Print the prompt without calling the API.")
 
     context_parser = subparsers.add_parser("context", help="Print compact LLM-ready game state JSON.")
@@ -109,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     bili_parser.add_argument("--env-file", default=".env", help="File containing OPENAI_API_KEY.")
     bili_parser.add_argument("--timeout", type=float, default=60.0, help="OpenAI request timeout in seconds.")
     bili_parser.add_argument("--limit", type=int, default=30, help="Maximum event rows per LLM context section.")
-    bili_parser.add_argument("--answer-char-limit", type=int, default=220, help="Maximum characters shown for one LLM answer.")
+    bili_parser.add_argument("--answer-char-limit", type=int, default=DEFAULT_ANSWER_CHAR_LIMIT, help="Maximum characters shown for one LLM answer.")
     bili_parser.add_argument("--duration", type=float, help="Stop after this many seconds.")
     bili_parser.add_argument("--debug-danmaku", action="store_true", help="Print every received danmaku and why it was accepted or ignored.")
     bili_parser.add_argument("--debug-commands", action="store_true", help="Print every raw Bilibili command name received.")
@@ -204,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         except LLMError as exc:
             print(f"LLM request failed: {exc}", file=sys.stderr)
             return 1
-        print(answer.text)
+        print(sanitize_llm_output(answer.text, max_chars=args.answer_char_limit))
         return 0
 
     if args.command == "context":

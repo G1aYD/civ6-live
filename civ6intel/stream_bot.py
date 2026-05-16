@@ -29,7 +29,7 @@ from .overlay_state import OverlayJsonWriter
 from .state import load_snapshot
 
 
-DEFAULT_ANSWER_CHAR_LIMIT = 220
+DEFAULT_ANSWER_CHAR_LIMIT = 300
 OVERLAY_FINAL_ANSWER_POLL_GRACE_SECONDS = 1.5
 
 

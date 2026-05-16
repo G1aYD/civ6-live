@@ -17,6 +17,7 @@ from .archive import (
     PANTHEON_RE,
     latest_deal_session_lines,
 )
+from .bbg_zh_names import BBG_ZH_NAME_MAP
 from .config import Civ6Paths
 from .events import format_events, human_live_events
 from .model import GameSnapshot, PlayerTurnStats, clean_game_name
@@ -244,7 +245,7 @@ ZH_NAME_MAP = {
     "Japan": "日本",
     "Khmer": "高棉",
     "Kongo": "刚果",
-    "Korea": "韩国",
+    "Korea": "朝鲜",
     "Macedon": "马其顿",
     "Mali": "马里",
     "Maori": "毛利",
@@ -441,6 +442,7 @@ ZH_NAME_MAP.update(
         "Johannesburg": "\u7ea6\u7ff0\u5185\u65af\u5821",
     }
 )
+ZH_NAME_MAP.update(BBG_ZH_NAME_MAP)
 
 
 def llm_context_json(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None = None, limit: int = 30) -> str:
@@ -451,17 +453,7 @@ def llm_context_prompt(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | Non
     context = build_llm_context(paths, snapshot, turn=turn, limit=limit)
     return "\n".join(
         [
-            "你是文明 6 直播解说助手。请基于下面 JSON 上下文回答观众问题。",
-            "默认用中文回答；优先使用 *_zh、display_zh、turn_label 字段。",
-            "回答 OBS 展示用纯文本，不使用 Markdown。",
-            "不要把中文和英文专名并列成中英双语；只有没有中文名时才保留英文原文。",
-            "文明、领袖、城邦、奇观、伟人、万神殿、宗教、单位、建筑、科技、市政等专名尽量使用通行中文译名。",
-            "称呼玩家时必须优先使用文明名（玩家ID/昵称），例如 韩国（QFENG），不要写 P0、P1；除非问题明确问领袖，否则不要附带领袖名。",
-            "回合格式使用“32T”这种写法，不要写“T32”。",
-            "允许结合文明 6 常识和 BBG 规则做合理推断，给出更像直播解说的判断。",
-            "不要反复强调“根据日志”“日志未提供”等技术来源；只有关键精确数据确实缺失时，才简短说“当前信息不足”。",
-            "胜利进度部分是近似进度指标，不等同于游戏胜利面板的全部精确数字。",
-            "\u56de\u7b54\u65b9\u4f4d/\u5468\u56f4\u662f\u8c01\u65f6\uff0c\u5fc5\u987b\u4f18\u5148\u4f7f\u7528 save_file.player_details.players[].location\uff1blocation.center \u9ed8\u8ba4\u4f7f\u7528\u539f\u59cb\u9996\u90fd/\u51fa\u751f\u5730\u7f18\uff0c\u5373\u4fbf\u8be5\u9996\u90fd\u5df2\u88ab\u522b\u4eba\u5360\u9886\uff1b\u95ee\u5f53\u524d\u6b8b\u4f59\u57ce\u5e02\u624d\u770b current_core_center\uff1b\u672c\u5b58\u6863\u5750\u6807 y \u8d8a\u5927\u8d8a\u5317\uff0cy \u8d8a\u5c0f\u8d8a\u5357\uff0c\u8ddd\u79bb\u4f7f\u7528 hexes\u3002",
+            "以下是文明 6 当前局势 JSON。回答时优先使用 *_zh、display_zh、turn_label 字段。",
             "",
             "```json",
             json.dumps(context, ensure_ascii=False, separators=(",", ":")),
@@ -491,18 +483,10 @@ def build_llm_context(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None
         "selected_turn": selected_turn,
         "selected_turn_label": turn_label(selected_turn),
         "save_file": save_file_context(paths, snapshot, limit=limit),
-        "llm_answering_rules_zh": [
-            "用中文回答观众问题。",
-            "优先使用 *_zh、display_zh、turn_label 字段来组织回答。",
-            "回答 OBS 展示用纯文本，不使用 Markdown。",
-            "不要把中文名和英文名并列成中英双语；没有中文名时才保留英文原文。",
-            "文明、领袖、城邦、奇观、伟人、万神殿、宗教、单位、建筑、科技、市政等专名尽量使用通行中文译名。",
-            "回合写成“32T”，不要写“T32”。",
-            "称呼玩家时必须优先使用文明名（玩家ID/昵称），例如 韩国（QFENG），不要写 P0、P1；除非问题明确问领袖，否则不要附带领袖名。",
-            "能力、文明、总督、奇观等规则细节问题允许参考 https://civ6bbg.github.io/ 的 BBG 资料。",
-            "基于本上下文回答；没有关键数据时简短说明当前信息不足，不要把数据来源限制作为回答重点。",
-            "文化胜利的国内/境外游客阈值、宗教胜利的城市皈依总数、统治胜利的首都归属目前不是精确解析项。",
-            "分数、科技、文化、旅游、外交胜利点等是最近一次日志刷新回合的数据。",
+        "context_notes_zh": [
+            "*_zh、display_zh、turn_label 是首选展示字段。",
+            "胜利进度是近似指标；文化游客阈值、宗教皈依总数、统治首都归属暂未精确解析。",
+            "分数和产出多来自回合刷新；回合内事件可能不完整。",
         ],
         "position_answering_rule_zh": "\u65b9\u4f4d/\u5468\u56f4\u662f\u8c01\u7684\u95ee\u9898\u4f18\u5148\u4f7f\u7528 save_file.player_details.players[].location\uff1blocation.center \u9ed8\u8ba4\u4f7f\u7528\u539f\u59cb\u9996\u90fd/\u51fa\u751f\u5730\u7f18\uff0c\u5373\u4fbf\u8be5\u9996\u90fd\u5df2\u88ab\u522b\u4eba\u5360\u9886\uff1b\u95ee\u5f53\u524d\u6b8b\u4f59\u57ce\u5e02\u624d\u770b current_core_center\uff1b\u672c\u5b58\u6863\u5750\u6807 y \u8d8a\u5927\u8d8a\u5317\uff0cy \u8d8a\u5c0f\u8d8a\u5357\uff0c\u8ddd\u79bb\u4f7f\u7528 hexes\u3002",
         "players": [player_context(snapshot, stats) for stats in rows],
@@ -517,13 +501,6 @@ def build_llm_context(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None
         "governors": governors_context(paths, snapshot, limit=limit),
         "gold": gold_context(paths, snapshot),
         "recent_important_events": recent_events_context(paths, limit=limit),
-        "known_limitations": [
-            "This context is a compact live-game snapshot, not the full in-game UI.",
-            "Culture victory tourist thresholds are not currently parsed.",
-            "Religious victory city-conversion totals are not currently parsed.",
-            "Domination victory capital ownership is not reliably parsed yet.",
-            "Within-turn net events can be incomplete for non-host clients; turn-flush CSV data is more reliable for global stats.",
-        ],
         "warnings": snapshot.warnings,
     }
 
@@ -568,6 +545,12 @@ def save_file_context(paths: Civ6Paths, snapshot: GameSnapshot, limit: int) -> d
     summary = read_latest_save_summary(paths, include_map=True)
     if not summary:
         return {"available": False}
+    save_identities = save_identity_context(summary)
+    major_slots = {
+        player.get("slot")
+        for player in summary.get("major_players", [])
+        if player.get("slot") is not None
+    }
 
     return {
         "available": True,
@@ -586,31 +569,49 @@ def save_file_context(paths: Civ6Paths, snapshot: GameSnapshot, limit: int) -> d
             save_city_state_context(city_state)
             for city_state in summary.get("active_city_states", [])
         ][:limit],
-        "map": save_map_context(summary.get("map"), snapshot, limit=limit),
+        "map": save_map_context(summary.get("map"), save_identities, limit=limit),
         "player_details": save_player_details_context(
             paths,
             summary.get("player_details"),
-            snapshot,
+            save_identities,
+            major_slots,
             limit=limit,
             map_summary=summary.get("map"),
         ),
     }
 
 
+def save_identity_context(summary: dict) -> dict[int, dict]:
+    identities: dict[int, dict] = {}
+    for player in summary.get("major_players", []):
+        slot = player.get("slot")
+        if slot is not None:
+            identities[int(slot)] = save_player_context(player)
+    for city_state in summary.get("active_city_states", []):
+        slot = city_state.get("slot")
+        if slot is not None:
+            identities[int(slot)] = save_city_state_context(city_state)
+    return identities
+
+
 def save_player_context(player: dict) -> dict:
     civ = player.get("civilization")
     leader = player.get("leader")
     name = player.get("player_name")
+    civ_zh = zh_name(civ)
     return {
         "slot": player.get("slot"),
         "player_name": name,
         "civilization": civ,
+        "civilization_token": player.get("civilization_token"),
         "civilization_zh": zh_name(civ),
         "leader": leader,
+        "leader_token": player.get("leader_token"),
         "leader_zh": zh_name(leader),
         "team": player.get("team"),
         "team_label": team_label(player.get("team")),
-        "display_zh": f"{name}\uff08{zh_name(civ)}\uff09" if name else zh_name(civ),
+        "display": f"{civ} ({name})" if name else civ,
+        "display_zh": f"{civ_zh}\uff08{name}\uff09" if name else civ_zh,
     }
 
 
@@ -621,10 +622,14 @@ def save_city_state_context(player: dict) -> dict:
         "slot": player.get("slot"),
         "name": civ,
         "name_zh": zh_name(civ),
+        "civilization": civ,
+        "civilization_token": player.get("civilization_token"),
         "type": city_state_type,
         "type_zh": city_state_type_zh,
         "team": player.get("team"),
         "team_label": team_label(player.get("team")),
+        "display": civ,
+        "display_zh": zh_name(civ),
     }
 
 
@@ -643,7 +648,7 @@ def save_teams_llm_context(teams: dict) -> dict:
     }
 
 
-def save_map_context(map_summary: dict | None, snapshot: GameSnapshot, limit: int) -> dict | None:
+def save_map_context(map_summary: dict | None, save_identities: dict[int, dict], limit: int) -> dict | None:
     if not map_summary:
         return map_summary
     if map_summary.get("error"):
@@ -654,8 +659,8 @@ def save_map_context(map_summary: dict | None, snapshot: GameSnapshot, limit: in
         owned.append(
             {
                 **item,
-                "player": player_label(snapshot, slot),
-                "player_zh": player_label_zh(snapshot, slot),
+                "player": save_slot_label(save_identities, slot),
+                "player_zh": save_slot_label_zh(save_identities, slot),
             }
         )
     wonders = []
@@ -666,8 +671,8 @@ def save_map_context(map_summary: dict | None, snapshot: GameSnapshot, limit: in
             {
                 **item,
                 "display_zh": zh_name(display),
-                "owner_player": player_label(snapshot, item.get("owner")),
-                "owner_player_zh": player_label_zh(snapshot, item.get("owner")),
+                "owner_player": save_slot_label(save_identities, item.get("owner")),
+                "owner_player_zh": save_slot_label_zh(save_identities, item.get("owner")),
             }
         )
     return {
@@ -685,7 +690,8 @@ def save_map_context(map_summary: dict | None, snapshot: GameSnapshot, limit: in
 def save_player_details_context(
     paths: Civ6Paths,
     details: dict | None,
-    snapshot: GameSnapshot,
+    save_identities: dict[int, dict],
+    major_slots: set[int],
     limit: int,
     map_summary: dict | None = None,
 ) -> dict | None:
@@ -693,13 +699,18 @@ def save_player_details_context(
         return details
     if details.get("error"):
         return details
-    major_slots = set(snapshot.players)
     players = []
     raw_major_players = [
         player for player in details.get("players", [])
         if player.get("slot") in major_slots
     ]
-    raw_location_context = save_player_location_context(paths, raw_major_players, snapshot, map_summary, limit=limit)
+    raw_location_context = save_player_location_context(
+        paths,
+        raw_major_players,
+        save_identities,
+        map_summary,
+        limit=limit,
+    )
 
     for player in raw_major_players:
         slot = player.get("slot")
@@ -727,10 +738,10 @@ def save_player_details_context(
         players.append(
             {
                 "slot": slot,
-                "player": player_label(snapshot, slot),
-                "player_zh": player_label_zh(snapshot, slot),
-                "team": snapshot.identity_for(slot).team if snapshot.identity_for(slot) else None,
-                "team_label": team_label(snapshot.identity_for(slot).team) if snapshot.identity_for(slot) else None,
+                "player": save_slot_label(save_identities, slot),
+                "player_zh": save_slot_label_zh(save_identities, slot),
+                "team": save_identities.get(slot, {}).get("team"),
+                "team_label": save_identities.get(slot, {}).get("team_label"),
                 "city_count": player.get("city_count"),
                 "district_count": player.get("district_count"),
                 "location": raw_location_context.get(slot),
@@ -803,7 +814,7 @@ def save_district_groups(paths: Civ6Paths, districts: list[dict], limit: int) ->
 def save_player_location_context(
     paths: Civ6Paths,
     players: list[dict],
-    snapshot: GameSnapshot,
+    save_identities: dict[int, dict],
     map_summary: dict | None,
     limit: int,
 ) -> dict[int, dict]:
@@ -829,8 +840,8 @@ def save_player_location_context(
             city for city, role in zip(cities, city_roles)
             if not role["likely_backline_or_outpost"]
         ] or cities
-        identity = snapshot.identity_for(slot)
-        capital = player_capital_context(paths, player, slot, snapshot, city_ownership)
+        identity = save_identities.get(slot, {})
+        capital = player_capital_context(paths, player, slot, save_identities, city_ownership)
         current_core_x, current_core_y = weighted_city_center(core_cities)
         if capital.get("x") is not None and capital.get("y") is not None:
             center_x = float(capital["x"])
@@ -845,10 +856,10 @@ def save_player_location_context(
             center_method = "\u539f\u59cb\u9996\u90fd\u672a\u89c2\u6d4b\uff0c\u6539\u7528\u5f53\u524d\u6838\u5fc3\u57ce\u5e02"
         centers[slot] = {
             "slot": slot,
-            "player": player_label(snapshot, slot),
-            "player_zh": player_label_zh(snapshot, slot),
-            "team": identity.team if identity else None,
-            "team_label": team_label(identity.team) if identity else None,
+            "player": save_slot_label(save_identities, slot),
+            "player_zh": save_slot_label_zh(save_identities, slot),
+            "team": identity.get("team"),
+            "team_label": identity.get("team_label"),
             "center_x": round(center_x, 1),
             "center_y": round(center_y, 1),
             "current_core_center_x": round(current_core_x, 1),
@@ -996,10 +1007,10 @@ def player_capital_context(
     paths: Civ6Paths,
     player: dict,
     slot: int,
-    snapshot: GameSnapshot,
+    save_identities: dict[int, dict],
     city_ownership: dict[str, dict],
 ) -> dict:
-    identity = snapshot.identity_for(slot)
+    identity = save_identities.get(slot, {})
     owned_capital = next((city for city in player.get("cities", []) if city.get("id") == 0), None)
     if owned_capital is not None:
         name = city_name_zh(paths, owned_capital.get("raw_name"), owned_capital.get("display_name"))
@@ -1013,7 +1024,7 @@ def player_capital_context(
             "source": "\u5b58\u6863\u57ce\u5e02 id 0",
         }
 
-    expected_tag = first_city_name_tag(paths.cache_dir, identity.civilization if identity else None)
+    expected_tag = first_city_name_tag(paths.cache_dir, identity.get("civilization_token") or identity.get("civilization"))
     expected_name = city_name_zh(paths, expected_tag, None) if expected_tag else None
     owner = city_ownership.get(expected_tag) if expected_tag else None
     observed_owner = owner.get("slot") if owner else None
@@ -1027,8 +1038,8 @@ def player_capital_context(
         "population": observed_city.get("population") if observed_city else None,
         "currently_owned": False,
         "status_zh": "\u539f\u59cb\u9996\u90fd\u4e0d\u5728\u8be5\u73a9\u5bb6\u5f53\u524d\u57ce\u5e02\u5217\u8868\u4e2d",
-        "observed_current_owner": player_label(snapshot, observed_owner),
-        "observed_current_owner_zh": player_label_zh(snapshot, observed_owner),
+        "observed_current_owner": save_slot_label(save_identities, observed_owner),
+        "observed_current_owner_zh": save_slot_label_zh(save_identities, observed_owner),
         "source": "\u57ce\u5e02 id 0 \u7f3a\u5931\uff0c\u4f7f\u7528 CityNames \u9996\u4e2a\u57ce\u540d\u56de\u67e5",
     }
 
@@ -1812,6 +1823,24 @@ def player_label_zh(snapshot: GameSnapshot, slot: int | None) -> str:
     if identity.player_name:
         return f"{civ}（{identity.player_name}）"
     return civ or f"玩家{slot}"
+
+
+def save_slot_label(save_identities: dict[int, dict], slot: int | None) -> str:
+    if slot is None:
+        return "unknown"
+    identity = save_identities.get(slot)
+    if identity is None:
+        return f"player {slot}"
+    return identity.get("display") or identity.get("civilization") or identity.get("name") or f"player {slot}"
+
+
+def save_slot_label_zh(save_identities: dict[int, dict], slot: int | None) -> str:
+    if slot is None:
+        return "未知"
+    identity = save_identities.get(slot)
+    if identity is None:
+        return f"玩家{slot}"
+    return identity.get("display_zh") or identity.get("civilization_zh") or identity.get("name_zh") or f"玩家{slot}"
 
 
 def zh_name(value: str | None) -> str | None:

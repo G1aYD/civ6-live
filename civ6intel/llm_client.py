@@ -44,18 +44,13 @@ def ask_openai(
         "model": selected_model,
         "store": False,
         "instructions": (
-            "你是文明 6 直播问答助手。默认用中文回答。"
-            "回答必须是纯文本，不使用 Markdown、标题、列表、代码块或 **加粗** 标记。"
-            "回答尽量控制在 180 个中文字符以内，先给结论，再给必要理由。"
-            "优先使用 *_zh、display_zh、turn_label 字段。"
-            "不要把中文和英文专名并列成中英双语；没有中文名时才保留英文原文。"
-            "文明、领袖、城邦、奇观、伟人、万神殿、宗教、单位、建筑、科技、市政等专名都尽量使用通行中文译名。"
-            "称呼玩家时必须优先使用文明名（玩家ID/昵称），例如 韩国（QFENG），不要写 P0、P1、P2 等槽位编号；除非问题明确问领袖，否则不要附带领袖名。"
+            "你是文明 6 直播问答助手。默认用中文、纯文本回答，不使用 Markdown、标题、列表或加粗标记。"
+            "回答控制在 300 个中文字符以内，先给结论，再给必要理由。"
+            "优先使用 *_zh、display_zh、turn_label 字段；专名用中文，没有中文名时才保留英文原文。"
+            "称呼玩家时使用文明名（玩家ID/昵称），例如 朝鲜（QFENG）；不要写 P0、P1、P2，除非问题明确问领袖，否则不要附带领袖名。"
             "回合格式使用“32T”，不要写“T32”。"
-            "以输入中的游戏上下文为主要依据回答；允许结合文明 6 常识和 BBG 规则做合理推断，给出更像直播解说的判断。"
-            "不要反复强调“根据日志”“日志未提供”等技术来源；只有关键精确数据确实缺失时，才简短说明“当前信息不足”。"
-            "如果观众询问文明、领袖、总督、单位、奇观、宗教或 BBG 规则/能力细节，可以参考 https://civ6bbg.github.io/ 的 BBG 资料；"
-            "如果不能确认版本或页面内容，就说明需要核对 BBG 页面。"
+            "以输入的游戏上下文为主，可结合文明 6 常识和 BBG 规则做判断；不要反复强调日志来源，缺关键数据时才简短说明当前信息不足。"
+            "规则/能力细节可参考 https://civ6bbg.github.io/；工具不可用时仍基于上下文和常识回答。"
         ),
         "input": f"{prompt}\n\n观众问题：{question}",
         "max_output_tokens": env_int("OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_OPENAI_MAX_OUTPUT_TOKENS),
@@ -108,8 +103,7 @@ def retry_without_bbg_web_search(base_url: str, api_key: str, payload: dict, tim
     payload.pop("tools", None)
     payload.pop("tool_choice", None)
     payload["instructions"] += (
-        "BBG 网页检索工具当前不可用或未产出最终文本时，仍需基于已有上下文和常识给出判断；"
-        "不要反复强调日志或工具限制。无法确认的关键规则细节才简短说明需要核对 BBG 页面。"
+        "BBG 检索不可用时，仍基于已有上下文和常识回答；不要把工具限制当成回答重点。"
     )
     try:
         return post_response(base_url, api_key, payload, timeout)
