@@ -19,8 +19,8 @@
       --text: #fff7df;
       --muted: #dec995;
       --shadow: rgba(0, 0, 0, 0.56);
-      --font-main: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
-      --font-title: Georgia, "Times New Roman", "STSong", serif;
+      --font-main: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+      --font-title: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
     }
 
     * { box-sizing: border-box; }
@@ -137,8 +137,8 @@
       font-family: var(--font-title);
       color: var(--gold-bright);
       font-size: 22px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      font-weight: 800;
+      letter-spacing: 0.04em;
       text-shadow: 0 2px 0 rgba(0,0,0,0.55), 0 0 14px rgba(245,220,145,0.28);
       white-space: nowrap;
       overflow: hidden;
@@ -217,22 +217,22 @@
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
       color: #fff4d6;
-      font-size: 18px;
+      font-size: 17px;
       line-height: 1.26;
       font-weight: 700;
       text-shadow: 0 2px 8px rgba(0, 0, 0, 0.68);
       overflow: hidden;
     }
 
-    .news-text.scrolling {
-      animation: newsScroll 26s linear infinite;
+    .news-text.slide-up {
+      animation: newsSlideUp 420ms ease-out both;
     }
 
     .news-item {
-      min-height: 56px;
-      padding: 7px 9px 7px 10px;
+      min-height: 55px;
+      padding: 6px 8px 6px 9px;
       border-left: 3px solid rgba(245, 220, 145, 0.76);
       background: rgba(255, 255, 255, 0.055);
       display: grid;
@@ -249,14 +249,39 @@
       min-width: 0;
     }
 
-    .news-icon {
+    .news-icon-wrap {
+      position: relative;
       width: 38px;
       height: 38px;
+      flex: 0 0 38px;
+      display: grid;
+      place-items: center;
       border: 1px solid rgba(245, 220, 145, 0.82);
       border-radius: 50%;
       background: rgba(0, 0, 0, 0.32);
-      object-fit: cover;
       box-shadow: 0 0 10px rgba(245, 220, 145, 0.2);
+      overflow: hidden;
+    }
+
+    .news-icon {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .news-icon-fallback {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 35% 20%, rgba(245, 220, 145, 0.26), rgba(10, 35, 56, 0.95));
+      color: var(--gold-bright);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
     }
 
     .news-arrow {
@@ -278,17 +303,17 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
-    @keyframes newsScroll {
-      0%, 12% { transform: translateY(0); }
-      100% { transform: translateY(-50%); }
+    @keyframes newsSlideUp {
+      from { transform: translateY(61px); opacity: 0.84; }
+      to { transform: translateY(0); opacity: 1; }
     }
 
-    .news-text:not(.scrolling) .news-item {
-      min-height: 0;
-      font-size: 18px;
+    .news-text .news-item {
+      min-height: 55px;
+      font-size: 17px;
     }
 
-    .news-text:not(.scrolling) .news-body {
+    .news-text .news-body {
       -webkit-line-clamp: 2;
     }
 
@@ -315,8 +340,8 @@
       color: var(--gold-bright);
       font-family: var(--font-title);
       font-size: 17px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      font-weight: 800;
+      letter-spacing: 0.04em;
     }
 
     .label::before {
@@ -413,8 +438,8 @@
       :root { --overlay-width: 360px; --overlay-height: 790px; }
       .overlay { gap: 12px; grid-template-rows: 242px 1fr; }
       .title { font-size: 20px; }
-      .news-text { font-size: 16px; }
-      .news-icon { width: 34px; height: 34px; }
+      .news-text { font-size: 15px; }
+      .news-icon-wrap { width: 34px; height: 34px; flex-basis: 34px; }
       .question-text { font-size: 22px; }
       .answer-text { font-size: 17px; line-height: 1.34; }
       .question-meta { font-size: 13px; }
@@ -432,7 +457,7 @@
       <div class="corner-accent br"></div>
       <div class="panel-inner">
         <div class="title-row">
-          <div class="title"><span class="emblem">✦</span><span id="newsTitle">世界议会快报</span></div>
+          <div class="title"><span class="emblem">✦</span><span id="newsTitle">世界新闻快报</span></div>
           <div class="pill" id="gameMeta">游戏信息实时更新</div>
         </div>
         <div class="news-box">
@@ -484,9 +509,29 @@
     const QA_MIN_DISPLAY_MS = 9000;
     const QA_THINKING_MAX_DISPLAY_MS = 25000;
     const QA_PENDING_LIMIT = 6;
+    const CIV_ICON_FALLBACKS = {
+      America: "美",
+      Arabia: "阿",
+      Australia: "澳",
+      Brazil: "巴",
+      Canada: "加",
+      China: "中",
+      Cree: "克",
+      France: "法",
+      "Gran Colombia": "大哥",
+      Greece: "希",
+      Indonesia: "印尼",
+      Kongo: "刚",
+      Korea: "朝",
+      Mongolia: "蒙",
+      Phoenicia: "腓",
+      Poland: "波",
+      Russia: "俄",
+      Vietnam: "越"
+    };
 
     const defaultState = {
-      newsTitle: "世界议会快报",
+      newsTitle: "世界新闻快报",
       qaTitle: "弹幕问政厅",
       meta: "游戏信息实时更新",
       aiStatus: "询问 AI 当局游戏",
@@ -608,11 +653,15 @@
       const signature = JSON.stringify(normalizedItems);
       const el = $("newsText");
       if (!el || signature === lastNewsSignature) return;
+      const shouldAnimate = Boolean(lastNewsSignature);
       lastNewsSignature = signature;
-      const shouldScroll = false;
-      const rendered = shouldScroll ? [...normalizedItems, ...normalizedItems] : normalizedItems;
-      el.classList.toggle("scrolling", shouldScroll);
+      const rendered = normalizedItems.slice(-VISIBLE_NEWS_ROWS);
+      el.classList.remove("slide-up");
       el.innerHTML = rendered.map(renderNewsItem).join("");
+      if (shouldAnimate) {
+        void el.offsetWidth;
+        el.classList.add("slide-up");
+      }
     }
 
     function normalizeNewsItem(item) {
@@ -630,7 +679,10 @@
         <div class="news-icons">
           ${icons.map((icon, index) => `
             ${index ? '<span class="news-arrow">→</span>' : ''}
-            <img class="news-icon" src="${escapeHTML(icon.url)}" alt="${escapeHTML(icon.label || '')}" />
+            <span class="news-icon-wrap" title="${escapeHTML(icon.label || '')}">
+              <span class="news-icon-fallback">${escapeHTML(iconFallbackLabel(icon))}</span>
+              <img class="news-icon" src="${escapeHTML(icon.url)}" alt="${escapeHTML(icon.label || '')}" onerror="this.remove()" />
+            </span>
           `).join("")}
         </div>
       ` : "";
@@ -640,6 +692,14 @@
           <div class="news-body">${escapeHTML(item.text)}</div>
         </div>
       `;
+    }
+
+    function iconFallbackLabel(icon) {
+      const source = String(icon.civilization || icon.label || "?").trim();
+      if (CIV_ICON_FALLBACKS[source]) return CIV_ICON_FALLBACKS[source];
+      const letters = source.match(/[A-Za-z]/g);
+      if (letters && letters.length) return letters.slice(0, 2).join("").toUpperCase();
+      return source.slice(0, 2) || "?";
     }
 
     function updateText(id, value, previousValue, animate = true) {

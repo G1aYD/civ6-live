@@ -24,7 +24,7 @@ from .bilibili_live import (
 )
 from .config import Civ6Paths
 from .llm_client import LLMError, ask_openai, load_env_file
-from .llm_context import llm_context_prompt
+from .llm_context import direct_game_answer, llm_context_prompt
 from .obs_news import build_current_news_item, build_news_ticker
 from .overlay_state import OverlayJsonWriter
 from .state import load_snapshot
@@ -34,6 +34,7 @@ DEFAULT_ANSWER_CHAR_LIMIT = 300
 DEFAULT_GIFT_QUESTION_COST = 100
 GIFT_COIN_PER_BATTERY = 100
 OVERLAY_FINAL_ANSWER_POLL_GRACE_SECONDS = 1.5
+WEBSOCKET_RESTART_DELAY_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -137,7 +138,7 @@ class GiftLedger:
     def record_gift(self, gift: GiftEvent) -> str:
         gift_key = gift_event_key(gift)
         if gift_key in self.seen_gifts:
-            self.latest_line = f"已记录过 {gift.uname or gift.uid} 的 {gift.gift_name}，本次跳过重复累计"
+            self.latest_line = f"重复礼物已忽略：{gift.uname or gift.uid}"
             self.write_obs_text()
             return self.latest_line
         self.seen_gifts.add(gift_key)
@@ -165,7 +166,7 @@ class GiftLedger:
         self.save()
         balance = self.balance_for(gift.uid)
         credits = balance // self.question_cost
-        self.latest_line = f"{account['uname']} 送出 {gift.gift_name} x{gift.num}，可提问 {credits} 次"
+        self.latest_line = f"{account['uname']} +礼物，剩余 {credits}问"
         self.write_obs_text()
         return self.latest_line
 
@@ -214,7 +215,7 @@ class GiftLedger:
         account["spent_coin"] = int(account.get("spent_coin") or 0) + self.question_cost
         balance = self.balance_for(uid)
         credits = balance // self.question_cost
-        self.latest_line = f"{account.get('uname') or uid} 已使用 1 次提问，剩余 {credits} 次"
+        self.latest_line = f"{account.get('uname') or uid} -1问，剩余 {credits}问"
         self.save()
         self.write_obs_text()
         return True, balance
@@ -369,52 +370,76 @@ async def run_bilibili_obs_bot(
         print(f"Listening to Bilibili room {room}. OBS text: {obs_text}")
         if gate.enabled:
             print(gift_gate_description(gate))
-        command_iter = iter_live_commands(
-            resolved_room_id or room,
-            debug=debug_commands or debug_danmaku,
-            force_default_ws=force_default_ws,
-        ).__aiter__()
         while True:
-            command = await next_command(command_iter, stop_at)
-            if command is None:
+            if stop_at is not None and time.monotonic() >= stop_at:
                 break
-            cmd_name = command_name(command)
-            if debug_commands:
-                print(f"received command: {command_debug_line(command, include_json=debug_command_json)}")
-            if cmd_name.startswith("__"):
-                continue
-            gift = parse_gift(command)
-            if gift:
-                print(format_gift_event(gift))
-                print(f"gift ledger: {gift_ledger.record_gift(gift)}")
-                if gate.observe(gift):
-                    print(f"gift gate: {gift.uname} sent {gift.gift_name} x{gift.num}; question credit enabled")
-                continue
-            super_chat = parse_super_chat(command)
-            if super_chat and allow_super_chat:
-                await queue.put(super_chat_question(super_chat))
-                print(f"accepted super chat: {super_chat.uname}: {super_chat.message}")
-                continue
-            danmaku = parse_danmaku(command)
-            if not danmaku:
-                continue
-            if history_poll and not websocket_danmaku:
-                if debug_danmaku:
-                    print(
-                        "ignored websocket danmaku because history polling is enabled "
-                        f"and has better usernames: {danmaku.uname}({danmaku.uid}): {danmaku.text}"
+            reconnect_socket = False
+            command_iter = iter_live_commands(
+                resolved_room_id or room,
+                debug=debug_commands or debug_danmaku,
+                force_default_ws=force_default_ws,
+            ).__aiter__()
+            try:
+                while True:
+                    try:
+                        command = await next_command(command_iter, stop_at)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        print(
+                            "Bilibili websocket command loop stopped unexpectedly: "
+                            f"{exc}; reconnecting in {WEBSOCKET_RESTART_DELAY_SECONDS:.0f}s"
+                        )
+                        reconnect_socket = True
+                        break
+                    if command is None:
+                        break
+                    cmd_name = command_name(command)
+                    if debug_commands:
+                        print(f"received command: {command_debug_line(command, include_json=debug_command_json)}")
+                    if cmd_name.startswith("__"):
+                        continue
+                    gift = parse_gift(command)
+                    if gift:
+                        print(format_gift_event(gift))
+                        print(f"gift ledger: {gift_ledger.record_gift(gift)}")
+                        if gate.observe(gift):
+                            print(f"gift gate: {gift.uname} sent {gift.gift_name} x{gift.num}; question credit enabled")
+                        continue
+                    super_chat = parse_super_chat(command)
+                    if super_chat and allow_super_chat:
+                        await queue.put(super_chat_question(super_chat))
+                        print(f"accepted super chat: {super_chat.uname}: {super_chat.message}")
+                        continue
+                    danmaku = parse_danmaku(command)
+                    if not danmaku:
+                        continue
+                    if history_poll and not websocket_danmaku:
+                        if debug_danmaku:
+                            print(
+                                "ignored websocket danmaku because history polling is enabled "
+                                f"and has better usernames: {danmaku.uname}({danmaku.uid}): {danmaku.text}"
+                            )
+                        continue
+                    await handle_danmaku(
+                        danmaku,
+                        seen_danmaku=seen_danmaku,
+                        queue=queue,
+                        gate=gate,
+                        gift_ledger=gift_ledger,
+                        require_gift_credit=require_gift_credit,
+                        question_mode=question_mode,
+                        debug_danmaku=debug_danmaku,
                     )
-                continue
-            await handle_danmaku(
-                danmaku,
-                seen_danmaku=seen_danmaku,
-                queue=queue,
-                gate=gate,
-                gift_ledger=gift_ledger,
-                require_gift_credit=require_gift_credit,
-                question_mode=question_mode,
-                debug_danmaku=debug_danmaku,
-            )
+            finally:
+                if command_iter is not None:
+                    await command_iter.aclose()
+                    command_iter = None
+            if not reconnect_socket:
+                break
+            if stop_at is not None and time.monotonic() >= stop_at:
+                break
+            await asyncio.sleep(WEBSOCKET_RESTART_DELAY_SECONDS)
     finally:
         if command_iter is not None:
             await command_iter.aclose()
@@ -643,6 +668,9 @@ def answer_question_with_llm(
 ) -> str:
     load_env_file(env_file)
     snapshot = load_snapshot(paths)
+    direct_answer = direct_game_answer(paths, snapshot, question)
+    if direct_answer:
+        return direct_answer
     prompt = llm_context_prompt(paths, snapshot, turn=None, limit=context_limit)
     return ask_openai(
         prompt,
@@ -728,6 +756,7 @@ def clean_question_text(text: str) -> str:
 def sanitize_llm_output(text: str, *, max_chars: int = DEFAULT_ANSWER_CHAR_LIMIT) -> str:
     text = strip_markdown(text)
     text = strip_player_slot_labels(text)
+    text = strip_internal_context_terms(text)
     text = re.sub(r"\s+", " ", text).strip()
     if max_chars > 0 and len(text) > max_chars:
         text = text[: max_chars - 1].rstrip("，。；、：,.;: ") + "…"
@@ -749,6 +778,38 @@ def strip_player_slot_labels(text: str) -> str:
     text = re.sub(r"\bP\d+\s*", "", text)
     text = re.sub(r"（([^，）]+)，[^）]+）", r"（\1）", text)
     text = re.sub(r"\(([^,)]+),[^)]+\)", r"(\1)", text)
+    return text
+
+
+def strip_internal_context_terms(text: str) -> str:
+    replacements = {
+        "gold.transfers": "金币转账记录",
+        "gold.totals_sent": "金币转账总计",
+        "totals_sent": "金币转账总计",
+        "transfers": "转账记录",
+        "save_file": "存档信息",
+        "players[]": "玩家信息",
+        "players": "玩家信息",
+        "display_zh": "中文名称",
+        "turn_label": "回合",
+        "*_zh": "中文名称",
+        "JSON": "当前信息",
+        "json": "当前信息",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = text.replace("根据日志", "从当前信息看")
+    text = text.replace("日志未提供", "当前信息暂缺")
+    text = text.replace("日志里", "当前信息里")
+    text = text.replace("日志中", "当前信息中")
+    text = text.replace("这份上下文里", "当前信息里")
+    text = text.replace("上下文里", "当前信息里")
+    text = re.sub(
+        r"当前信息里\s*金币转账记录\s*和\s*金币转账总计\s*都(?:是)?空的",
+        "当前暂时没有玩家间金币转账记录",
+        text,
+    )
+    text = text.replace("都是空的", "暂时没有记录")
     return text
 
 

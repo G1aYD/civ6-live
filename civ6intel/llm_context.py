@@ -33,6 +33,12 @@ CITY_STATE_RE = re.compile(
     r"Level\s+-\s+CIVILIZATION_LEVEL_CITY_STATE"
 )
 
+OVERLAY_GOLD_NEWS_RE = re.compile(r"(?P<turn>\d+)T\s+送出\s+(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+金币")
+TEXT_GOLD_NEWS_RE = re.compile(
+    r"(?P<turn>\d+)T\s+(?P<from>.+?)\s+向\s+(?P<to>.+?)\s+送出\s+"
+    r"(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+金币"
+)
+
 
 CITY_STATE_TYPES = {
     "Akkad": ("Militaristic", "军事"),
@@ -454,6 +460,8 @@ def llm_context_prompt(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | Non
     return "\n".join(
         [
             "以下是文明 6 当前局势 JSON。回答时优先使用 *_zh、display_zh、turn_label 字段。",
+            "JSON 仅供内部理解；面向观众回答时不要提 JSON 字段名、文件名、日志名或“某字段为空”。",
+            "如果问题问谁花钱/送钱/打钱最多，优先看金币摘要和转账总计；若没有转账记录，用经济数据估计，不要回答内部字段为空。",
             "",
             "```json",
             json.dumps(context, ensure_ascii=False, separators=(",", ":")),
@@ -1694,7 +1702,7 @@ def governor_name(value: str) -> str:
 def gold_context(paths: Civ6Paths, snapshot: GameSnapshot) -> dict:
     path = paths.logs_dir / "DiplomacyDeals.log"
     if not path.exists():
-        return {"transfers": [], "totals_sent": []}
+        return overlay_gold_context(snapshot) or empty_gold_context()
 
     transfers = []
     totals: dict[int, float] = defaultdict(float)
@@ -1734,18 +1742,251 @@ def gold_context(paths: Civ6Paths, snapshot: GameSnapshot) -> dict:
                 "source": path.name,
             }
         )
+    if not transfers:
+        return overlay_gold_context(snapshot) or empty_gold_context()
+    return gold_payload_from_transfers(snapshot, transfers)
+
+
+def empty_gold_context() -> dict:
     return {
-        "transfers": transfers,
-        "totals_sent": [
-            {
-                "player": player_label(snapshot, slot),
-                "player_zh": player_label_zh(snapshot, slot),
-                "slot": slot,
-                "total_gold_sent": amount,
-            }
-            for slot, amount in sorted(totals.items())
-        ],
+        "available": False,
+        "summary_zh": "当前未解析到玩家间金币转账记录。若观众问谁花钱最多，可用金币余额和每回合金币作经济体量估计。",
+        "leader_zh": None,
+        "recent_transfers_zh": [],
+        "totals_sent_desc": [],
+        "transfers": [],
+        "totals_sent": [],
     }
+
+
+def overlay_gold_context(
+    snapshot: GameSnapshot,
+    overlay_json: Path = Path("obs/overlay.json"),
+    news_text: Path = Path("obs/news.txt"),
+) -> dict | None:
+    transfers = []
+
+    if overlay_json.exists():
+        try:
+            data = json.loads(overlay_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        items = data.get("news")
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "")
+                transfer = gold_transfer_from_overlay_news(snapshot, text, item.get("icons"), str(overlay_json))
+                if transfer is not None:
+                    transfers.append(transfer)
+
+    if news_text.exists():
+        try:
+            lines = news_text.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            transfer = gold_transfer_from_text_news(snapshot, line, str(news_text))
+            if transfer is not None:
+                transfers.append(transfer)
+
+    if not transfers:
+        return None
+    deduped = []
+    seen: set[tuple[object, object, object, object]] = set()
+    for transfer in transfers:
+        key = (
+            transfer.get("turn"),
+            transfer.get("from_slot"),
+            transfer.get("to_slot"),
+            transfer.get("amount"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(transfer)
+    payload = gold_payload_from_transfers(snapshot, deduped)
+    payload["source_note_zh"] = "金币统计来自 OBS 最近新闻缓存；适合回答直播画面里的近期转账。"
+    return payload
+
+
+def gold_transfer_from_overlay_news(
+    snapshot: GameSnapshot,
+    text: str,
+    icons: object,
+    source: str,
+) -> dict | None:
+    match = OVERLAY_GOLD_NEWS_RE.search(text)
+    if not match:
+        return gold_transfer_from_text_news(snapshot, text, source)
+    icon_items = icons if isinstance(icons, list) else []
+    if len(icon_items) < 2 or not isinstance(icon_items[0], dict) or not isinstance(icon_items[1], dict):
+        return gold_transfer_from_text_news(snapshot, text, source)
+    from_slot = parse_int(str(icon_items[0].get("slot")))
+    to_slot = parse_int(str(icon_items[1].get("slot")))
+    if from_slot is None:
+        return None
+    amount = parse_float(match.group("amount")) or 0.0
+    turn = parse_int(match.group("turn"))
+    return gold_transfer_payload(snapshot, turn, from_slot, to_slot, amount, source)
+
+
+def gold_transfer_from_text_news(snapshot: GameSnapshot, text: str, source: str) -> dict | None:
+    match = TEXT_GOLD_NEWS_RE.search(text)
+    if not match:
+        return None
+    from_slot = slot_from_news_label(snapshot, match.group("from"))
+    to_slot = slot_from_news_label(snapshot, match.group("to"))
+    if from_slot is None:
+        return None
+    amount = parse_float(match.group("amount")) or 0.0
+    turn = parse_int(match.group("turn"))
+    return gold_transfer_payload(snapshot, turn, from_slot, to_slot, amount, source)
+
+
+def gold_transfer_payload(
+    snapshot: GameSnapshot,
+    turn: int | None,
+    from_slot: int | None,
+    to_slot: int | None,
+    amount: float,
+    source: str,
+) -> dict:
+    return {
+        "turn": turn,
+        "turn_label": turn_label(turn),
+        "from": player_label(snapshot, from_slot),
+        "from_zh": player_label_zh(snapshot, from_slot),
+        "from_slot": from_slot,
+        "to": player_label(snapshot, to_slot),
+        "to_zh": player_label_zh(snapshot, to_slot),
+        "to_slot": to_slot,
+        "amount": amount,
+        "duration": 0,
+        "timing": "one_time",
+        "deal_id": None,
+        "source": source,
+    }
+
+
+def slot_from_news_label(snapshot: GameSnapshot, label: str) -> int | None:
+    normalized = normalize_news_label(label)
+    if not normalized:
+        return None
+    for slot, identity in snapshot.players.items():
+        candidates = {
+            identity.player_name or "",
+            identity.network_name or "",
+            identity.short_civ,
+            identity.short_leader,
+            zh_name(identity.short_civ) or "",
+            zh_name(identity.short_leader) or "",
+            player_label(snapshot, slot),
+            player_label_zh(snapshot, slot),
+        }
+        for candidate in candidates:
+            candidate_normalized = normalize_news_label(candidate)
+            if candidate_normalized and candidate_normalized in normalized:
+                return slot
+    return None
+
+
+def normalize_news_label(value: str | None) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\bP\d+\b", "", text)
+    text = re.sub(r"[()\uff08\uff09,\uff0c\s]", "", text)
+    return text.casefold()
+
+
+def gold_payload_from_transfers(snapshot: GameSnapshot, transfers: list[dict]) -> dict:
+    totals: dict[int, float] = defaultdict(float)
+    for transfer in transfers:
+        from_slot = parse_int(str(transfer.get("from_slot")))
+        if from_slot is None:
+            continue
+        amount = parse_float(str(transfer.get("amount"))) or 0.0
+        totals[from_slot] += amount
+    totals_desc = [
+        {
+            "player": player_label(snapshot, slot),
+            "player_zh": player_label_zh(snapshot, slot),
+            "slot": slot,
+            "total_gold_sent": amount,
+            "total_gold_sent_zh": f"{format_gold_amount(amount)} 金币",
+        }
+        for slot, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+    ]
+    recent_transfers_zh = [
+        (
+            f"{transfer.get('turn_label') or ''} "
+            f"{transfer.get('from_zh')} 向 {transfer.get('to_zh')} 送出 "
+            f"{format_gold_amount(transfer.get('amount'))} 金币"
+        ).strip()
+        for transfer in transfers[-10:]
+    ]
+    leader = totals_desc[0] if totals_desc else None
+    summary = (
+        f"金币转账最多的是 {leader['player_zh']}，共送出 {leader['total_gold_sent_zh']}。"
+        if leader
+        else "当前未记录到玩家间金币转账。若观众问谁花钱最多，可用金币余额和每回合金币作经济体量估计。"
+    )
+    return {
+        "available": bool(transfers),
+        "summary_zh": summary,
+        "leader_zh": leader,
+        "recent_transfers_zh": recent_transfers_zh,
+        "totals_sent_desc": totals_desc,
+        "transfers": transfers,
+        "totals_sent": totals_desc,
+    }
+
+
+def direct_game_answer(paths: Civ6Paths, snapshot: GameSnapshot, question: str) -> str | None:
+    if not looks_like_gold_spending_question(question):
+        return None
+    gold = gold_context(paths, snapshot)
+    totals = gold.get("totals_sent_desc") or []
+    if totals:
+        first = totals[0]
+        second = totals[1] if len(totals) > 1 else None
+        runner = ""
+        if second:
+            runner = f"第二是{second.get('player_zh')}，共{format_gold_amount(second.get('total_gold_sent'))}金币。"
+        return (
+            f"如果按玩家间金币转账算，{first.get('player_zh')}花/送的钱最多，"
+            f"共{format_gold_amount(first.get('total_gold_sent'))}金币。{runner}"
+            "买单位、买建筑这种内政消费目前不能精确拆出来。"
+        )
+
+    rows = [
+        stats for stats in snapshot.stats_for_turn(snapshot.latest_turn)
+        if stats.slot is not None and snapshot.identity_for(stats.slot) is not None
+    ]
+    gold_yield_rows = [stats for stats in rows if stats.gold_yield is not None]
+    if gold_yield_rows:
+        leader = max(gold_yield_rows, key=lambda stats: stats.gold_yield or 0)
+        return (
+            "当前没有看到玩家间金币转账。若按经济体量估计，"
+            f"{player_label_zh(snapshot, leader.slot)}金币收入最高，约每回合"
+            f"{format_gold_amount(leader.gold_yield)}金币，最可能有最多可支配现金。"
+        )
+    gold_balance_rows = [stats for stats in rows if stats.gold_balance is not None]
+    if gold_balance_rows:
+        leader = max(gold_balance_rows, key=lambda stats: stats.gold_balance or 0)
+        return (
+            "当前没有看到玩家间金币转账。若按现金储备估计，"
+            f"{player_label_zh(snapshot, leader.slot)}金币余额最高，约"
+            f"{format_gold_amount(leader.gold_balance)}金币。"
+        )
+    return "当前还没有足够经济数据判断谁花钱最多。"
+
+
+def looks_like_gold_spending_question(question: str) -> bool:
+    text = question.strip().lower()
+    gold_words = ("金币", "金钱", "钱", "gold", "送钱", "送金", "打钱", "转账", "交易", "花钱")
+    leader_words = ("谁", "哪个", "最多", "最", "第一", "leader", "most")
+    return any(word in text for word in gold_words) and any(word in text for word in leader_words)
 
 
 def city_states_context(paths: Civ6Paths) -> list[dict]:
@@ -1904,6 +2145,16 @@ def turn_label(turn: int | None) -> str | None:
     if turn is None:
         return None
     return f"{turn}T"
+
+
+def format_gold_amount(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "未知"
+    if math.isfinite(number) and number == int(number):
+        return str(int(number))
+    return f"{number:.1f}".rstrip("0").rstrip(".")
 
 
 def team_label(team: int | None) -> str | None:

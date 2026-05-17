@@ -90,12 +90,15 @@ def game_status_payload(paths: Civ6Paths, *, news_limit: int, news_text: str | N
         if player.get("display_zh") or player.get("display")
     ]
     news_items = build_news_entries(paths, limit=news_limit)
+    current_news_text = news_text or build_current_news_item(paths, limit=news_limit)
     if news_text:
-        news_items = [item for item in news_items if item.get("text") != news_text] + [{"text": news_text, "icons": []}]
+        has_news_item = any(item.get("text") == news_text for item in news_items)
+        if not has_news_item:
+            news_items = [*news_items, {"text": news_text, "icons": []}]
     return {
         "meta": "游戏信息实时更新",
         "status": f"LIVE · {turn}",
-        "newsText": news_text or build_current_news_item(paths, limit=news_limit),
+        "newsText": current_news_text,
         "news": news_items or [DEFAULT_NEWS],
     }
 

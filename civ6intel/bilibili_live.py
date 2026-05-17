@@ -114,9 +114,15 @@ def get_danmaku_history(room_id: int, timeout: float = 10.0) -> list[DanmakuEven
     return events
 
 
-def get_danmaku_info(room_id: int, timeout: float = 10.0, *, force_default_ws: bool = False) -> tuple[str, str]:
+def get_danmaku_info(
+    room_id: int,
+    timeout: float = 10.0,
+    *,
+    force_default_ws: bool = False,
+    use_cookie: bool = True,
+) -> tuple[str, str]:
     params = sign_wbi_params({"id": room_id, "type": 0}, timeout=timeout)
-    data = http_json(f"{BILIBILI_DANMU_INFO_URL}?{urlencode(params)}", timeout=timeout)
+    data = http_json(f"{BILIBILI_DANMU_INFO_URL}?{urlencode(params)}", timeout=timeout, use_cookie=use_cookie)
     if data.get("code") != 0:
         raise RuntimeError(f"Bilibili getDanmuInfo failed: {data.get('message') or data}")
     info = data.get("data") or {}
@@ -130,12 +136,12 @@ def get_danmaku_info(room_id: int, timeout: float = 10.0, *, force_default_ws: b
     return f"wss://{host}:{port}/sub", token
 
 
-def http_json(url: str, timeout: float = 10.0) -> dict:
+def http_json(url: str, timeout: float = 10.0, *, use_cookie: bool = True) -> dict:
     headers = {
         "User-Agent": "Mozilla/5.0 civ6interaction/0.1",
         "Referer": "https://live.bilibili.com/",
     }
-    cookie = os.environ.get("BILIBILI_COOKIE")
+    cookie = os.environ.get("BILIBILI_COOKIE") if use_cookie else None
     if cookie:
         headers["Cookie"] = cookie
     request = Request(
@@ -167,16 +173,32 @@ async def iter_live_commands(
         print(f"resolved Bilibili room_id: {room_id}")
     reconnect_delay = 2.0
     recoverable_errors = (OSError, ConnectionError, RuntimeError, WebSocketException)
+    anonymous_auth = websocket_anonymous_auth()
     while True:
         try:
-            ws_url, token = get_danmaku_info(room_id, timeout=timeout, force_default_ws=force_default_ws)
+            ws_url, token = get_danmaku_info(
+                room_id,
+                timeout=timeout,
+                force_default_ws=force_default_ws,
+                use_cookie=not anonymous_auth,
+            )
             if debug:
                 print(f"danmaku websocket: {ws_url}")
-            async with websockets.connect(ws_url, ping_interval=None, max_size=None, open_timeout=timeout) as websocket:
+                print(f"danmaku websocket auth: {'anonymous' if anonymous_auth else 'logged-in'}")
+            async with websockets.connect(
+                ws_url,
+                origin="https://live.bilibili.com",
+                additional_headers=websocket_headers(room_id, include_cookie=not anonymous_auth),
+                user_agent_header=BROWSER_USER_AGENT,
+                ping_interval=None,
+                max_size=None,
+                open_timeout=timeout,
+                proxy=None,
+            ) as websocket:
                 reconnect_delay = 2.0
                 if debug:
                     print("websocket connected")
-                await websocket.send(auth_packet(room_id, token))
+                await websocket.send(auth_packet(room_id, token, anonymous=anonymous_auth))
                 if debug:
                     print("auth packet sent")
                 heartbeat_task = asyncio.create_task(send_heartbeats(websocket))
@@ -205,12 +227,36 @@ async def send_heartbeats(websocket: object) -> None:
         await websocket.send(pack_packet(OP_HEARTBEAT, b"[object Object]"))
 
 
-def auth_packet(room_id: int, token: str) -> bytes:
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def websocket_headers(room_id: int, *, include_cookie: bool) -> dict[str, str]:
+    headers = {
+        "Referer": f"https://live.bilibili.com/{room_id}",
+    }
+    cookie = os.environ.get("BILIBILI_COOKIE") if include_cookie else None
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
+def websocket_anonymous_auth() -> bool:
+    value = os.environ.get("BILIBILI_WS_ANON")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def auth_packet(room_id: int, token: str, *, anonymous: bool = False) -> bytes:
     body = {
-        "uid": parse_int(os.environ.get("BILIBILI_UID")) or 0,
+        "uid": 0 if anonymous else parse_int(os.environ.get("BILIBILI_UID")) or 0,
         "roomid": room_id,
-        "protover": PROTO_ZLIB,
-        "buvid": os.environ.get("BILIBILI_BUVID") or buvid_from_cookie(os.environ.get("BILIBILI_COOKIE", "")),
+        "protover": PROTO_BROTLI,
+        "buvid": "" if anonymous else os.environ.get("BILIBILI_BUVID") or buvid_from_cookie(os.environ.get("BILIBILI_COOKIE", "")),
         "platform": "web",
         "type": 2,
         "key": token,

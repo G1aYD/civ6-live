@@ -10,7 +10,7 @@ from .archive import inspect_logs
 from .config import load_paths
 from .events import format_events, human_live_events
 from .llm_client import DEFAULT_OPENAI_MODEL, LLMError, ask_openai, load_env_file
-from .llm_context import llm_context_json, llm_context_prompt
+from .llm_context import direct_game_answer, llm_context_json, llm_context_prompt
 from .obs_news import run_obs_news
 from .overlay_http import run_overlay_server, start_overlay_server
 from .overlay_state import run_overlay_json
@@ -195,6 +195,10 @@ def main(argv: list[str] | None = None) -> int:
         snapshot = load_snapshot(paths)
         turn = None if args.turn == "latest" else int(args.turn)
         question = " ".join(args.question)
+        direct_answer = direct_game_answer(paths, snapshot, question)
+        if direct_answer and not args.dry_run:
+            print(sanitize_llm_output(direct_answer, max_chars=args.answer_char_limit))
+            return 0
         prompt = llm_context_prompt(paths, snapshot, turn=turn, limit=args.limit)
         if args.dry_run:
             print(f"{prompt}\n\n观众问题：{question}")

@@ -9,7 +9,8 @@ param(
     [switch]$Debug,
     [switch]$NoGiftGate,
     [switch]$NoHistoryPoll,
-    [switch]$WebsocketDanmaku
+    [switch]$WebsocketDanmaku,
+    [switch]$BiliHostWs
 )
 
 $ErrorActionPreference = "Stop"
@@ -141,6 +142,10 @@ if ($DisableHistoryPoll) {
 
 if ($UseWebsocketDanmaku) {
     $ArgsList += "--websocket-danmaku"
+}
+
+if ($BiliHostWs -or (Test-EnvTrue "CIV6_BILI_HOST_WS")) {
+    $ArgsList += "--bili-host-ws"
 }
 
 Write-Host "Starting Civ 6 Bilibili OBS bot..."
