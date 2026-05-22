@@ -63,9 +63,18 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.5
 OPENAI_MAX_OUTPUT_TOKENS=900
 OPENAI_REASONING_EFFORT=low
-BILIBILI_COOKIE=buvid3=...; SESSDATA=...
-BILIBILI_UID=...
-BILIBILI_BUVID=...
+BILIBILI_COOKIE_SESSDATA=...
+BILIBILI_COOKIE_BILI_JCT=...
+BILIBILI_COOKIE_DEDEUSERID=...
+BILIBILI_COOKIE_DEDEUSERID_CKMD5=...
+BILIBILI_COOKIE_BUVID3=...
+BILIBILI_COOKIE_BUVID4=...
+BILIBILI_COOKIE_LIVE_BUVID=...
+BILIBILI_COOKIE_SOURCE=env
+BILIBILI_REQUIRE_LOGIN=true
+BILIBILI_WS_ANON=false
+BILIBILI_ANON_FALLBACK=false
+BILIBILI_PROTO_VER=2
 CIV6_TEAM_1_NAME=蓝队
 CIV6_TEAM_2_NAME=红队
 CIV6_BILI_ROOM=https://live.bilibili.com/8555868
@@ -120,6 +129,39 @@ CIV6_NO_HISTORY_POLL=true
 
 The preset launcher will automatically enable WebSocket danmaku when history polling is disabled.
 
+To check the Bilibili auth path without printing secrets:
+
+```powershell
+python -m civ6intel.cli bili-check
+```
+
+For production, `BILIBILI_COOKIE_SOURCE=env` is the quietest setup: paste the important logged-in
+Bilibili cookie values into the split `BILIBILI_COOKIE_*` fields in `.env`, keep
+`BILIBILI_REQUIRE_LOGIN=true`, and keep history polling enabled so normal danmaku questions come
+from logged-in history polling with full uid/usernames. The important browser cookie names are
+`SESSDATA`, `bili_jct`, `DedeUserID`, `DedeUserID__ckMd5`, `buvid3`, `buvid4`, and `LIVE_BUVID`.
+
+If you prefer a no-copy setup later, launch a dedicated login browser:
+
+```powershell
+.\scripts\bili_login_browser.ps1
+```
+
+Log in to Bilibili in that browser window, keep it open while streaming, and set
+`BILIBILI_COOKIE_SOURCE=devtools`. The tool will read the live browser cookie through
+`BILIBILI_DEVTOOLS_URL` without printing it. `BILIBILI_COOKIE_SOURCE=browser` is also supported
+for direct Chrome/Edge/Firefox cookie extraction, but Chromium cookie encryption can be less stable
+on some Windows installs.
+
+When the split cookie fields are set, the websocket uses logged-in auth by default. If no buvid is
+available, the tool falls back to Bilibili's public buvid endpoint, but full login still requires
+valid `SESSDATA`.
+Some large public rooms reject logged-in websocket auth but allow anonymous auth. In that case, the
+tool automatically falls back to anonymous websocket for 60 seconds; set `BILIBILI_ANON_FALLBACK=false`
+to disable this diagnostic fallback.
+For paid-question production, keep `BILIBILI_ANON_FALLBACK=false`; otherwise anonymous fallback can
+produce masked usernames and `uid=0` in websocket diagnostics.
+
 In OBS, add a Text source, enable "Read from file", and select `C:\Git\civ6interaction\obs\answer.txt`.
 
 For a separate scrolling game-news ticker, add another Text source that reads `obs\news.txt`,
@@ -155,6 +197,15 @@ python -m civ6intel.cli obs-overlay --overlay-json obs\overlay.json
 python -m civ6intel.cli overlay-server --overlay-json obs\overlay.json
 ```
 
+Before a new game, verify that the current players map to existing BBG leader images:
+
+```powershell
+python -m civ6intel.cli check-icons
+```
+
+Use `--all` to check every human-playable leader in Civ VI's merged Base/DLC/Mod configuration, or
+`--offline` to print the computed image filenames without calling GitHub.
+
 Point an OBS Browser Source at your HTML file. The HTML will poll the JSON endpoint and update
 `meta`, `newsText`, `barrage`, `question`, `answer`, `aiStatus`, and `status`.
 
@@ -164,7 +215,7 @@ Gift-gated questions are supported by matching the danmaku `uid` with recent gif
 python -m civ6intel.cli bili-obs --room https://live.bilibili.com/8555868 --gift-name 辣条 --gift-window 600 --consume-gift
 ```
 
-Use `--gift-id` when you know the numeric gift id, or `--min-gift-value` to allow any gift at/above a coin value. Super chats are accepted by default because they are already paid messages; add `--no-super-chat` to disable that.
+Use `--gift-id` when you know the numeric gift id, or `--min-gift-value` to allow any gift at/above a coin value. Super chats are accepted by default and are also added to the persistent gift ledger; add `--no-super-chat` to disable that.
 `BILIBILI_COOKIE` is optional, but it can help keep user ids/names available if Bilibili masks anonymous live-message data.
 
 For coin-based paid questions, keep a persistent gift ledger and charge the configured coin value per danmaku
@@ -174,10 +225,14 @@ question. Set `CIV6_GIFT_QUESTION_COST` in `.env` or pass `--gift-question-cost`
 python -m civ6intel.cli bili-obs --room https://live.bilibili.com/8555868 --overlay-json obs\overlay.json --serve-overlay --require-gift-credit --gift-question-cost 100 --gift-obs-text obs\gifts.txt
 ```
 
-This writes every gift to `obs\gifts.jsonl`, user totals/spent balance to `obs\gift_totals.json`,
-and an OBS-friendly status file to `obs\gifts.txt`. The status file shows the current
-`1问 = N coin` conversion and recalculates remaining questions from the configured cost.
+This writes every gift and super chat to `obs\gifts.jsonl`, user totals/spent balance to
+`obs\gift_totals.json`, and an OBS-friendly status file to `obs\gifts.txt`. The status file shows
+the current conversion, such as `1问 = 5电池`, and recalculates remaining questions from the
+configured cost. Super chat `price` is converted to internal coin value with
+`CIV6_SUPER_CHAT_COIN_MULTIPLIER`, which defaults to `100`.
 Add `obs\gifts.txt` as a separate OBS Text source with "Read from file" enabled.
+The logged-in Bilibili account is allowed to ask questions without spending gift balance. Add extra
+free users with `CIV6_FREE_QUESTION_UIDS=uid1,uid2` in `.env`.
 
 For a bounded live test during a turn transition:
 
