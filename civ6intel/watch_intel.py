@@ -192,11 +192,12 @@ def gold_deal_lines(paths: Civ6Paths, limit: int = 8) -> list[str]:
             if not gold_match:
                 continue
             duration = parse_int(gold_match.group("duration")) or 0
-            timing = "per-turn" if duration > 0 else "one-time"
+            amount = gold_match.group("amount")
+            amount_label = f"{amount} GPT for {duration} turns" if duration > 0 else f"{amount} gold"
             deals.append(
                 f"turn {current_turn}: P{gold_match.group('from')} sent "
-                f"{gold_match.group('amount')} gold to P{gold_match.group('to')} "
-                f"({timing}, deal {current_deal})"
+                f"{amount_label} to P{gold_match.group('to')} "
+                f"(deal {current_deal})"
             )
 
     if not deals:

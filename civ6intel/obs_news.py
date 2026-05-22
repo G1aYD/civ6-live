@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import difflib
+import json
 import re
+import sqlite3
 import time
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from .config import Civ6Paths
-from .llm_context import build_llm_context
+from .llm_context import build_llm_context, gold_transfer_amount_zh
 from .model import GameSnapshot, PlayerIdentity
 from .state import load_snapshot
 
@@ -14,47 +19,74 @@ from .state import load_snapshot
 DEFAULT_NEWS_EMPTY = "等待文明 6 战报..."
 DEFAULT_SEPARATOR = "\n"
 BBG_LEADER_IMAGE_BASE_URL = "https://raw.githubusercontent.com/civ6bbg/civ6bbg.github.io/main/images/leaders"
+BBG_LEADER_IMAGE_API_URL = "https://api.github.com/repos/civ6bbg/civ6bbg.github.io/contents/images/leaders?ref=main"
 
 CIV_BBG_IMAGE_NAMES = {
     "Babylon Stk": "Babylon",
     "Lime Thule": "Thule",
     "Maori": "Māori",
     "Ottoman": "Ottomans",
+    "Lime Teotihuacan": "Teotihuacán",
     "Suk Swahili": "Swahili",
+    "Suk Tibet": "Tibet",
     "Teotihuacan": "Teotihuacán",
 }
 
 LEADER_BBG_IMAGE_NAMES = {
+    "Barbarossa": "Frederick Barbarossa",
+    "Basil": "Basil II",
+    "Canada Laurier": "Wilfrid Laurier",
     "Catherine De Medici": "Catherine de Medici (Black Queen)",
     "Catherine De Medici Alt": "Catherine de Medici (Magnificence)",
     "Catherine De Medici Expanded": "Catherine de Medici (Black Queen)",
     "Cleopatra": "Cleopatra (Egyptian)",
+    "Cleopatra Alt": "Cleopatra (Ptolemaic)",
     "Eleanor England": "Eleanor of Aquitaine (England)",
     "Eleanor France": "Eleanor of Aquitaine (France)",
     "Elizabeth": "Elizabeth I",
     "Gitarja": "Gitarja",
+    "Hardrada": "Harald Hardrada (Konge)",
+    "Harald Alt": "Harald Hardrada (Varangian)",
     "Harald Hardrada": "Harald Hardrada (Konge)",
+    "Hojo": "Hojo Tokimune",
     "Jayavarman": "Jayavarman VII",
     "Joao III": "João III",
+    "Jfd Olympias": "Olympias",
     "Kublai Khan China": "Kublai Khan (China)",
     "Kublai Khan C": "Kublai Khan (China)",
     "Kublai Khan Mongolia": "Kublai Khan (Mongolia)",
     "Lady Six Sky": "Lady Six Sky",
     "Lady Trieu": "Bà Triệu",
+    "Laurier": "Wilfrid Laurier",
+    "Lime Teo Owl": "Spearthrower Owl",
+    "Ll Tekinich II": "Te' K'inich II",
     "Lime Phoe Ahiram": "Ahiram",
     "Lime Thule Dave": "Kiviuq",
+    "Ludwig": "Ludwig II",
     "Menelik": "Menelik II",
+    "Mvemba": "Mvemba a Nzinga",
     "Mvemba A Nzinga": "Mvemba a Nzinga",
     "Pedro": "Pedro II",
+    "Peter Great": "Peter",
     "Qin Shi Huang": "Qin (Mandate of Heaven)",
+    "Qin": "Qin (Mandate of Heaven)",
+    "Qin Alt": "Qin (Unifier)",
     "Ramses": "Ramses II",
+    "Robert The Bruce": "Robert the Bruce",
     "Saladin": "Saladin (Sultan)",
+    "Saladin Alt": "Saladin (Vizier)",
     "Simon Bolivar": "Simón Bolívar",
     "Suk Al Hasan": "Al-Hasan ibn Sulaiman",
+    "Suk Trisong Detsen": "Trisong Detsen",
     "Suleiman": "Suleiman (Kanuni)",
+    "Suleiman Alt": "Suleiman (Muhteşem)",
+    "Suk Vercingetorix Dlc": "Vercingetorix",
     "Teddy Roosevelt": "Teddy Roosevelt (Bull Moose)",
+    "T Roosevelt": "Teddy Roosevelt (Bull Moose)",
     "T Roosevelt Original": "Teddy Roosevelt (Bull Moose)",
     "T Roosevelt Roughrider": "Teddy Roosevelt (Rough Rider)",
+    "Victoria": "Victoria (Age of Empire)",
+    "Victoria Alt": "Victoria (Age of Steam)",
 }
 
 
@@ -109,8 +141,13 @@ def build_news_entries(paths: Civ6Paths, *, limit: int = 20) -> list[dict]:
     gold = context.get("gold", {}) if isinstance(context.get("gold"), dict) else {}
     for transfer in gold.get("transfers", []):
         label = transfer.get("turn_label") or turn_label(transfer.get("turn"))
-        amount = format_amount(transfer.get("amount"))
-        text = f"{label} 送出 {amount} 金币" if label else f"送出 {amount} 金币"
+        duration = parse_turn(transfer.get("duration")) or 0
+        amount = transfer.get("amount_zh") or gold_transfer_amount_zh(
+            transfer.get("amount"),
+            duration,
+            transfer.get("timing"),
+        )
+        text = f"{label} 送出 {amount}" if label else f"送出 {amount}"
         items.append(
             (
                 (parse_turn(transfer.get("turn")), "", 3),
@@ -193,14 +230,20 @@ def leader_icons_for_slots(snapshot: GameSnapshot, slots: list[object]) -> list[
 
 
 def leader_icon_url(identity: PlayerIdentity) -> str | None:
+    filename = leader_icon_filename(identity)
+    if not filename:
+        return None
+    return f"{BBG_LEADER_IMAGE_BASE_URL}/{quote(filename)}"
+
+
+def leader_icon_filename(identity: PlayerIdentity) -> str | None:
     if identity.leader.startswith("LEADER_MINOR_CIV_") or "Minor Civ" in identity.short_leader:
         return None
     civ = CIV_BBG_IMAGE_NAMES.get(identity.short_civ, identity.short_civ)
     leader = LEADER_BBG_IMAGE_NAMES.get(identity.short_leader, identity.short_leader)
     if not civ or not leader:
         return None
-    filename = f"{civ} {leader}.webp"
-    return f"{BBG_LEADER_IMAGE_BASE_URL}/{quote(filename)}"
+    return f"{civ} {leader}.webp"
 
 
 def player_icon_label(identity: PlayerIdentity) -> str:
@@ -208,6 +251,162 @@ def player_icon_label(identity: PlayerIdentity) -> str:
     if identity.player_name:
         return f"{civ}（{identity.player_name}）"
     return civ
+
+
+def check_leader_icons(
+    paths: Civ6Paths,
+    *,
+    timeout: float = 5.0,
+    offline: bool = False,
+    all_known: bool = False,
+) -> list[dict]:
+    identities = all_known_icon_identities(paths) if all_known else current_game_icon_identities(paths)
+    available_names: set[str] | None = None
+    index_error: str | None = None
+    if not offline:
+        try:
+            available_names = fetch_bbg_leader_image_names(timeout=timeout)
+        except (OSError, HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            index_error = str(exc)
+
+    rows = []
+    for identity in identities:
+        filename = leader_icon_filename(identity)
+        if not filename:
+            rows.append(
+                {
+                    "slot": identity.slot,
+                    "player": player_icon_label(identity),
+                    "civilization": identity.short_civ,
+                    "leader": identity.short_leader,
+                    "filename": None,
+                    "url": None,
+                    "status": "skip",
+                    "note": "city-state or missing leader image",
+                    "suggestions": [],
+                }
+            )
+            continue
+        url = f"{BBG_LEADER_IMAGE_BASE_URL}/{quote(filename)}"
+        status = "unchecked"
+        note = "offline check only" if offline else ""
+        suggestions: list[str] = []
+        if available_names is not None:
+            if filename in available_names:
+                status = "ok"
+            else:
+                status = "missing"
+                suggestions = suggest_icon_filenames(filename, available_names, identity)
+        elif not offline:
+            status = "index_error"
+            note = index_error or "could not fetch BBG leader image index"
+        rows.append(
+            {
+                "slot": identity.slot,
+                "player": player_icon_label(identity),
+                "civilization": identity.short_civ,
+                "leader": identity.short_leader,
+                "filename": filename,
+                "url": url,
+                "status": status,
+                "note": note,
+                "suggestions": suggestions,
+            }
+        )
+    return rows
+
+
+def current_game_icon_identities(paths: Civ6Paths) -> list[PlayerIdentity]:
+    snapshot = load_snapshot(paths)
+    return [
+        identity
+        for slot, identity in sorted(snapshot.players.items())
+        if identity is not None
+    ]
+
+
+def all_known_icon_identities(paths: Civ6Paths) -> list[PlayerIdentity]:
+    path = paths.cache_dir / "DebugConfiguration.sqlite"
+    if not path.exists():
+        return current_game_icon_identities(paths)
+    try:
+        with sqlite3.connect(path) as connection:
+            rows = connection.execute(
+                """
+                select CivilizationType, LeaderType
+                from Players
+                where HumanPlayable = 1
+                  and CivilizationType is not null
+                  and LeaderType is not null
+                  and CivilizationType != 'CIVILIZATION_SPECTATOR'
+                  and LeaderType != 'LEADER_SPECTATOR'
+                order by Domain, CivilizationType, LeaderType
+                """
+            ).fetchall()
+    except sqlite3.Error:
+        return current_game_icon_identities(paths)
+
+    seen: set[tuple[str, str]] = set()
+    identities: list[PlayerIdentity] = []
+    for civ, leader in rows:
+        key = (str(civ), str(leader))
+        if key in seen:
+            continue
+        seen.add(key)
+        identities.append(
+            PlayerIdentity(
+                slot=len(identities),
+                civilization=key[0],
+                leader=key[1],
+                is_human=True,
+            )
+        )
+    return identities
+
+
+def fetch_bbg_leader_image_names(*, timeout: float) -> set[str]:
+    request = Request(
+        BBG_LEADER_IMAGE_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "civ6interaction-icon-check",
+        },
+    )
+    with urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if not isinstance(data, list):
+        raise ValueError("unexpected GitHub API response for leader image index")
+    return {str(item.get("name")) for item in data if isinstance(item, dict) and str(item.get("name", "")).endswith(".webp")}
+
+
+def suggest_icon_filenames(filename: str, available_names: set[str], identity: PlayerIdentity, *, limit: int = 5) -> list[str]:
+    civ = CIV_BBG_IMAGE_NAMES.get(identity.short_civ, identity.short_civ)
+    leader = LEADER_BBG_IMAGE_NAMES.get(identity.short_leader, identity.short_leader)
+    related = [
+        name for name in sorted(available_names)
+        if civ.casefold() in name.casefold() or leader.casefold() in name.casefold()
+    ]
+    if related:
+        return related[:limit]
+    return difflib.get_close_matches(filename, sorted(available_names), n=limit, cutoff=0.45)
+
+
+def format_icon_check_report(rows: list[dict]) -> str:
+    if not rows:
+        return "No player identities found for icon check."
+    lines = ["Leader icon check:"]
+    for row in rows:
+        status = str(row.get("status") or "unknown").upper()
+        player = row.get("player") or f"slot {row.get('slot')}"
+        filename = row.get("filename") or "-"
+        line = f"- {status}: {player} -> {filename}"
+        if row.get("note"):
+            line += f" ({row['note']})"
+        suggestions = row.get("suggestions") or []
+        if suggestions:
+            line += f"; suggestions: {', '.join(suggestions)}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def run_obs_news(

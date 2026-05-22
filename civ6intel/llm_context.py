@@ -33,10 +33,14 @@ CITY_STATE_RE = re.compile(
     r"Level\s+-\s+CIVILIZATION_LEVEL_CITY_STATE"
 )
 
-OVERLAY_GOLD_NEWS_RE = re.compile(r"(?P<turn>\d+)T\s+送出\s+(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+金币")
+OVERLAY_GOLD_NEWS_RE = re.compile(
+    r"(?P<turn>\d+)T\s+送出\s+(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+"
+    r"(?P<kind>金币|回合金)(?:（持续\s*(?P<duration>\d+)T）)?"
+)
 TEXT_GOLD_NEWS_RE = re.compile(
     r"(?P<turn>\d+)T\s+(?P<from>.+?)\s+向\s+(?P<to>.+?)\s+送出\s+"
-    r"(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+金币"
+    r"(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+"
+    r"(?P<kind>金币|回合金)(?:（持续\s*(?P<duration>\d+)T）)?"
 )
 
 
@@ -462,6 +466,8 @@ def llm_context_prompt(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | Non
             "以下是文明 6 当前局势 JSON。回答时优先使用 *_zh、display_zh、turn_label 字段。",
             "JSON 仅供内部理解；面向观众回答时不要提 JSON 字段名、文件名、日志名或“某字段为空”。",
             "如果问题问谁花钱/送钱/打钱最多，优先看金币摘要和转账总计；若没有转账记录，用经济数据估计，不要回答内部字段为空。",
+            "金币交易必须区分现金和回合金：duration=0/timing=one_time 是一次性现金；duration>0/timing=per_turn 是每回合金币，不要混算。",
+            "金币统计里 totals_sent_desc 只代表一次性现金；gpt_sent_desc 只代表回合金。",
             "",
             "```json",
             json.dumps(context, ensure_ascii=False, separators=(",", ":")),
@@ -1705,7 +1711,6 @@ def gold_context(paths: Civ6Paths, snapshot: GameSnapshot) -> dict:
         return overlay_gold_context(snapshot) or empty_gold_context()
 
     transfers = []
-    totals: dict[int, float] = defaultdict(float)
     current_turn: int | None = None
     current_deal: str | None = None
     for line in latest_deal_session_lines(path):
@@ -1723,8 +1728,7 @@ def gold_context(paths: Civ6Paths, snapshot: GameSnapshot) -> dict:
         to_slot = parse_int(gold_match.group("to"))
         amount = parse_float(gold_match.group("amount")) or 0.0
         duration = parse_int(gold_match.group("duration")) or 0
-        total_slot = from_slot if from_slot is not None else -1
-        totals[total_slot] += amount
+        timing = gold_timing(duration)
         transfers.append(
             {
                 "turn": current_turn,
@@ -1737,7 +1741,8 @@ def gold_context(paths: Civ6Paths, snapshot: GameSnapshot) -> dict:
                 "to_slot": to_slot,
                 "amount": amount,
                 "duration": duration,
-                "timing": "per_turn" if duration > 0 else "one_time",
+                "timing": timing,
+                "amount_zh": gold_transfer_amount_zh(amount, duration, timing),
                 "deal_id": current_deal,
                 "source": path.name,
             }
@@ -1754,8 +1759,10 @@ def empty_gold_context() -> dict:
         "leader_zh": None,
         "recent_transfers_zh": [],
         "totals_sent_desc": [],
+        "gpt_sent_desc": [],
         "transfers": [],
         "totals_sent": [],
+        "gpt_sent": [],
     }
 
 
@@ -1801,6 +1808,8 @@ def overlay_gold_context(
             transfer.get("from_slot"),
             transfer.get("to_slot"),
             transfer.get("amount"),
+            transfer.get("timing"),
+            transfer.get("duration"),
         )
         if key in seen:
             continue
@@ -1829,7 +1838,9 @@ def gold_transfer_from_overlay_news(
         return None
     amount = parse_float(match.group("amount")) or 0.0
     turn = parse_int(match.group("turn"))
-    return gold_transfer_payload(snapshot, turn, from_slot, to_slot, amount, source)
+    duration = parse_int(match.group("duration")) or 0
+    timing = "per_turn" if match.group("kind") == "回合金" else gold_timing(duration)
+    return gold_transfer_payload(snapshot, turn, from_slot, to_slot, amount, source, duration=duration, timing=timing)
 
 
 def gold_transfer_from_text_news(snapshot: GameSnapshot, text: str, source: str) -> dict | None:
@@ -1842,7 +1853,9 @@ def gold_transfer_from_text_news(snapshot: GameSnapshot, text: str, source: str)
         return None
     amount = parse_float(match.group("amount")) or 0.0
     turn = parse_int(match.group("turn"))
-    return gold_transfer_payload(snapshot, turn, from_slot, to_slot, amount, source)
+    duration = parse_int(match.group("duration")) or 0
+    timing = "per_turn" if match.group("kind") == "回合金" else gold_timing(duration)
+    return gold_transfer_payload(snapshot, turn, from_slot, to_slot, amount, source, duration=duration, timing=timing)
 
 
 def gold_transfer_payload(
@@ -1852,7 +1865,11 @@ def gold_transfer_payload(
     to_slot: int | None,
     amount: float,
     source: str,
+    *,
+    duration: int = 0,
+    timing: str | None = None,
 ) -> dict:
+    resolved_timing = timing or gold_timing(duration)
     return {
         "turn": turn,
         "turn_label": turn_label(turn),
@@ -1863,8 +1880,9 @@ def gold_transfer_payload(
         "to_zh": player_label_zh(snapshot, to_slot),
         "to_slot": to_slot,
         "amount": amount,
-        "duration": 0,
-        "timing": "one_time",
+        "duration": duration,
+        "timing": resolved_timing,
+        "amount_zh": gold_transfer_amount_zh(amount, duration, resolved_timing),
         "deal_id": None,
         "source": source,
     }
@@ -1899,15 +1917,38 @@ def normalize_news_label(value: str | None) -> str:
     return text.casefold()
 
 
+def gold_timing(duration: int | None) -> str:
+    return "per_turn" if (duration or 0) > 0 else "one_time"
+
+
+def gold_transfer_amount_zh(amount: object, duration: int | None, timing: str | None) -> str:
+    if timing == "per_turn":
+        suffix = f"（持续 {duration}T）" if duration and duration > 0 else ""
+        return f"{format_gold_amount(amount)} 回合金{suffix}"
+    return f"{format_gold_amount(amount)} 金币"
+
+
+def gold_transfer_sentence_zh(transfer: dict) -> str:
+    return (
+        f"{transfer.get('turn_label') or ''} "
+        f"{transfer.get('from_zh')} 向 {transfer.get('to_zh')} 送出 "
+        f"{transfer.get('amount_zh') or gold_transfer_amount_zh(transfer.get('amount'), parse_int(str(transfer.get('duration'))) or 0, transfer.get('timing'))}"
+    ).strip()
+
+
 def gold_payload_from_transfers(snapshot: GameSnapshot, transfers: list[dict]) -> dict:
-    totals: dict[int, float] = defaultdict(float)
+    cash_totals: dict[int, float] = defaultdict(float)
+    gpt_totals: dict[int, float] = defaultdict(float)
     for transfer in transfers:
         from_slot = parse_int(str(transfer.get("from_slot")))
         if from_slot is None:
             continue
         amount = parse_float(str(transfer.get("amount"))) or 0.0
-        totals[from_slot] += amount
-    totals_desc = [
+        if transfer.get("timing") == "per_turn":
+            gpt_totals[from_slot] += amount
+        else:
+            cash_totals[from_slot] += amount
+    cash_totals_desc = [
         {
             "player": player_label(snapshot, slot),
             "player_zh": player_label_zh(snapshot, slot),
@@ -1915,30 +1956,47 @@ def gold_payload_from_transfers(snapshot: GameSnapshot, transfers: list[dict]) -
             "total_gold_sent": amount,
             "total_gold_sent_zh": f"{format_gold_amount(amount)} 金币",
         }
-        for slot, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+        for slot, amount in sorted(cash_totals.items(), key=lambda item: item[1], reverse=True)
+    ]
+    gpt_totals_desc = [
+        {
+            "player": player_label(snapshot, slot),
+            "player_zh": player_label_zh(snapshot, slot),
+            "slot": slot,
+            "total_gpt_sent": amount,
+            "total_gpt_sent_zh": f"{format_gold_amount(amount)} 回合金",
+        }
+        for slot, amount in sorted(gpt_totals.items(), key=lambda item: item[1], reverse=True)
     ]
     recent_transfers_zh = [
-        (
-            f"{transfer.get('turn_label') or ''} "
-            f"{transfer.get('from_zh')} 向 {transfer.get('to_zh')} 送出 "
-            f"{format_gold_amount(transfer.get('amount'))} 金币"
-        ).strip()
+        gold_transfer_sentence_zh(transfer)
         for transfer in transfers[-10:]
     ]
-    leader = totals_desc[0] if totals_desc else None
-    summary = (
-        f"金币转账最多的是 {leader['player_zh']}，共送出 {leader['total_gold_sent_zh']}。"
-        if leader
-        else "当前未记录到玩家间金币转账。若观众问谁花钱最多，可用金币余额和每回合金币作经济体量估计。"
-    )
+    cash_leader = cash_totals_desc[0] if cash_totals_desc else None
+    gpt_leader = gpt_totals_desc[0] if gpt_totals_desc else None
+    if cash_leader and gpt_leader:
+        summary = (
+            f"现金转账最多的是 {cash_leader['player_zh']}，共送出 {cash_leader['total_gold_sent_zh']}；"
+            f"回合金最多的是 {gpt_leader['player_zh']}，共送出 {gpt_leader['total_gpt_sent_zh']}。"
+        )
+    elif cash_leader:
+        summary = f"现金转账最多的是 {cash_leader['player_zh']}，共送出 {cash_leader['total_gold_sent_zh']}。"
+    elif gpt_leader:
+        summary = f"回合金转账最多的是 {gpt_leader['player_zh']}，共送出 {gpt_leader['total_gpt_sent_zh']}。"
+    else:
+        summary = "当前未记录到玩家间金币转账。若观众问谁花钱最多，可用金币余额和每回合金币作经济体量估计。"
     return {
         "available": bool(transfers),
         "summary_zh": summary,
-        "leader_zh": leader,
+        "leader_zh": cash_leader or gpt_leader,
+        "cash_leader_zh": cash_leader,
+        "gpt_leader_zh": gpt_leader,
         "recent_transfers_zh": recent_transfers_zh,
-        "totals_sent_desc": totals_desc,
+        "totals_sent_desc": cash_totals_desc,
+        "gpt_sent_desc": gpt_totals_desc,
         "transfers": transfers,
-        "totals_sent": totals_desc,
+        "totals_sent": cash_totals_desc,
+        "gpt_sent": gpt_totals_desc,
     }
 
 
@@ -1947,15 +2005,28 @@ def direct_game_answer(paths: Civ6Paths, snapshot: GameSnapshot, question: str) 
         return None
     gold = gold_context(paths, snapshot)
     totals = gold.get("totals_sent_desc") or []
-    if totals:
-        first = totals[0]
+    gpt_totals = gold.get("gpt_sent_desc") or []
+    if totals or gpt_totals:
+        first = totals[0] if totals else None
         second = totals[1] if len(totals) > 1 else None
-        runner = ""
-        if second:
-            runner = f"第二是{second.get('player_zh')}，共{format_gold_amount(second.get('total_gold_sent'))}金币。"
+        gpt_first = gpt_totals[0] if gpt_totals else None
+        cash_part = ""
+        if first:
+            runner = ""
+            if second:
+                runner = f"第二是{second.get('player_zh')}，共{format_gold_amount(second.get('total_gold_sent'))}金币。"
+            cash_part = (
+                f"现金转账最多的是{first.get('player_zh')}，共"
+                f"{format_gold_amount(first.get('total_gold_sent'))}金币。{runner}"
+            )
+        gpt_part = ""
+        if gpt_first:
+            gpt_part = (
+                f"回合金最多的是{gpt_first.get('player_zh')}，共"
+                f"{format_gold_amount(gpt_first.get('total_gpt_sent'))}回合金。"
+            )
         return (
-            f"如果按玩家间金币转账算，{first.get('player_zh')}花/送的钱最多，"
-            f"共{format_gold_amount(first.get('total_gold_sent'))}金币。{runner}"
+            f"{cash_part}{gpt_part}"
             "买单位、买建筑这种内政消费目前不能精确拆出来。"
         )
 

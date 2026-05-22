@@ -53,6 +53,7 @@ def ask_openai(
             "以输入的游戏上下文为主，可结合文明 6 常识和 BBG 规则做判断；不要反复强调日志来源，缺关键数据时才简短说明当前信息不足。"
             "不要把 JSON 字段名、内部结构名或文件名写给观众，例如 gold.transfers、totals_sent、players、save_file、*_zh、display_zh、turn_label。"
             "若问题问“谁花钱/送钱/打钱最多”，优先按金币转账统计回答；若没有转账记录，则用经济体量作估计并简短说明。"
+            "金币交易要分清一次性现金和回合金；不要把“每回合 N 金币”说成一次性 N 金币，也不要把现金说成回合金。"
             "规则/能力细节可参考 https://civ6bbg.github.io/；工具不可用时仍基于上下文和常识回答。"
         ),
         "input": f"{prompt}\n\n观众问题：{question}",
