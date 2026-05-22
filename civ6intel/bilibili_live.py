@@ -10,7 +10,7 @@ import time
 import zlib
 from dataclasses import dataclass
 from typing import AsyncIterator
-from urllib.parse import urlencode
+from urllib.parse import quote, unquote, urlencode
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -20,6 +20,8 @@ BILIBILI_ROOM_INFO_URL = "https://api.live.bilibili.com/room/v1/Room/get_info?ro
 BILIBILI_DANMU_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
 BILIBILI_DANMU_HISTORY_URL = "https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory?roomid={room}"
 BILIBILI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+BILIBILI_BUVID_SPI_URL = "https://api.bilibili.com/x/frontend/finger/spi"
+BILIBILI_GET_BUVID_URL = "https://api.bilibili.com/x/web-frontend/getbuvid"
 DEFAULT_WS_URL = "wss://broadcastlv.chat.bilibili.com/sub"
 WBI_MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -43,6 +45,33 @@ OP_HEARTBEAT_REPLY = 3
 OP_MESSAGE = 5
 OP_AUTH = 7
 OP_AUTH_REPLY = 8
+BROWSER_COOKIE_NAMES = {
+    "SESSDATA",
+    "bili_jct",
+    "DedeUserID",
+    "DedeUserID__ckMd5",
+    "buvid3",
+    "buvid4",
+    "LIVE_BUVID",
+    "_uuid",
+    "b_lsid",
+    "b_nut",
+    "bili_ticket",
+    "bili_ticket_expires",
+    "buvid_fp",
+    "buvid_fp_plain",
+    "sid",
+}
+BILIBILI_COOKIE_ENV_PARTS = (
+    ("BILIBILI_COOKIE_SESSDATA", "SESSDATA"),
+    ("BILIBILI_COOKIE_BILI_JCT", "bili_jct"),
+    ("BILIBILI_COOKIE_DEDEUSERID", "DedeUserID"),
+    ("BILIBILI_COOKIE_DEDEUSERID_CKMD5", "DedeUserID__ckMd5"),
+    ("BILIBILI_COOKIE_BUVID3", "buvid3"),
+    ("BILIBILI_COOKIE_BUVID4", "buvid4"),
+    ("BILIBILI_COOKIE_LIVE_BUVID", "LIVE_BUVID"),
+)
+_BROWSER_COOKIE_LOADED = False
 
 
 @dataclass(frozen=True)
@@ -75,6 +104,24 @@ class SuperChatEvent:
     raw: dict
 
 
+@dataclass(frozen=True)
+class BilibiliAuthConfig:
+    anonymous: bool
+    cookie_present: bool
+    uid: int
+    uid_source: str
+    buvid: str
+    buvid_source: str
+
+    def summary(self) -> str:
+        if self.anonymous:
+            return "anonymous"
+        uid_status = self.uid_source if self.uid else "missing"
+        buvid_status = self.buvid_source if self.buvid else "missing"
+        cookie_status = "yes" if self.cookie_present else "no"
+        return f"logged-in; cookie={cookie_status}; uid={uid_status}; buvid={buvid_status}"
+
+
 def extract_room_arg(value: str) -> str:
     match = re.search(r"live\.bilibili\.com/(\d+)", value)
     if match:
@@ -84,7 +131,7 @@ def extract_room_arg(value: str) -> str:
 
 def resolve_room_id(room: str | int, timeout: float = 10.0) -> int:
     room_arg = extract_room_arg(str(room))
-    data = http_json(BILIBILI_ROOM_INIT_URL.format(room=room_arg), timeout=timeout)
+    data = http_json(BILIBILI_ROOM_INIT_URL.format(room=room_arg), timeout=timeout, use_cookie=False)
     if data.get("code") != 0:
         raise RuntimeError(f"Bilibili room_init failed: {data.get('message') or data}")
     room_data = data.get("data") or {}
@@ -92,7 +139,7 @@ def resolve_room_id(room: str | int, timeout: float = 10.0) -> int:
 
 
 def get_room_info(room_id: int, timeout: float = 10.0) -> dict:
-    data = http_json(BILIBILI_ROOM_INFO_URL.format(room=room_id), timeout=timeout)
+    data = http_json(BILIBILI_ROOM_INFO_URL.format(room=room_id), timeout=timeout, use_cookie=False)
     if data.get("code") != 0:
         raise RuntimeError(f"Bilibili get_info failed: {data.get('message') or data}")
     info = data.get("data")
@@ -141,7 +188,9 @@ def http_json(url: str, timeout: float = 10.0, *, use_cookie: bool = True) -> di
         "User-Agent": "Mozilla/5.0 civ6interaction/0.1",
         "Referer": "https://live.bilibili.com/",
     }
-    cookie = os.environ.get("BILIBILI_COOKIE") if use_cookie else None
+    if use_cookie:
+        ensure_bilibili_cookie_loaded()
+    cookie = current_bilibili_cookie() if use_cookie else None
     if cookie:
         headers["Cookie"] = cookie
     request = Request(
@@ -173,32 +222,42 @@ async def iter_live_commands(
         print(f"resolved Bilibili room_id: {room_id}")
     reconnect_delay = 2.0
     recoverable_errors = (OSError, ConnectionError, RuntimeError, WebSocketException)
-    anonymous_auth = websocket_anonymous_auth()
+    logged_in_auth_failures = 0
+    anonymous_fallback_until = 0.0
     while True:
+        auth_config = resolve_bilibili_auth(timeout=timeout)
+        if (
+            not auth_config.anonymous
+            and time.monotonic() < anonymous_fallback_until
+            and not env_disabled("BILIBILI_ANON_FALLBACK")
+        ):
+            auth_config = anonymous_bilibili_auth_config(cookie_present=auth_config.cookie_present)
+        got_command = False
         try:
             ws_url, token = get_danmaku_info(
                 room_id,
                 timeout=timeout,
                 force_default_ws=force_default_ws,
-                use_cookie=not anonymous_auth,
+                use_cookie=not auth_config.anonymous,
             )
             if debug:
                 print(f"danmaku websocket: {ws_url}")
-                print(f"danmaku websocket auth: {'anonymous' if anonymous_auth else 'logged-in'}")
+                print(f"danmaku websocket auth: {auth_config.summary()}")
             async with websockets.connect(
                 ws_url,
                 origin="https://live.bilibili.com",
-                additional_headers=websocket_headers(room_id, include_cookie=not anonymous_auth),
+                additional_headers=websocket_headers(room_id, include_cookie=not auth_config.anonymous),
                 user_agent_header=BROWSER_USER_AGENT,
                 ping_interval=None,
                 max_size=None,
                 open_timeout=timeout,
+                compression=None,
                 proxy=None,
             ) as websocket:
                 reconnect_delay = 2.0
                 if debug:
                     print("websocket connected")
-                await websocket.send(auth_packet(room_id, token, anonymous=anonymous_auth))
+                await websocket.send(auth_packet(room_id, token, auth=auth_config))
                 if debug:
                     print("auth packet sent")
                 heartbeat_task = asyncio.create_task(send_heartbeats(websocket))
@@ -206,6 +265,7 @@ async def iter_live_commands(
                     async for message in websocket:
                         payload = message if isinstance(message, bytes) else message.encode("utf-8")
                         for command in decode_packets(payload, include_control=debug):
+                            got_command = True
                             yield command
                 finally:
                     heartbeat_task.cancel()
@@ -216,6 +276,19 @@ async def iter_live_commands(
         except asyncio.CancelledError:
             raise
         except recoverable_errors as exc:
+            if (
+                not auth_config.anonymous
+                and not got_command
+                and not env_disabled("BILIBILI_ANON_FALLBACK")
+                and not bilibili_require_login()
+            ):
+                logged_in_auth_failures += 1
+                if logged_in_auth_failures >= 2:
+                    anonymous_fallback_until = time.monotonic() + 60.0
+                    logged_in_auth_failures = 0
+                    print("logged-in danmaku auth failed twice; falling back to anonymous websocket for 60s")
+            elif got_command:
+                logged_in_auth_failures = 0
             print(f"danmaku websocket disconnected: {exc}; reconnecting in {reconnect_delay:.0f}s")
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 30.0)
@@ -223,8 +296,8 @@ async def iter_live_commands(
 
 async def send_heartbeats(websocket: object) -> None:
     while True:
-        await asyncio.sleep(30)
         await websocket.send(pack_packet(OP_HEARTBEAT, b"[object Object]"))
+        await asyncio.sleep(30)
 
 
 BROWSER_USER_AGENT = (
@@ -238,30 +311,372 @@ def websocket_headers(room_id: int, *, include_cookie: bool) -> dict[str, str]:
     headers = {
         "Referer": f"https://live.bilibili.com/{room_id}",
     }
-    cookie = os.environ.get("BILIBILI_COOKIE") if include_cookie else None
+    cookie = current_bilibili_cookie() if include_cookie else None
     if cookie:
         headers["Cookie"] = cookie
     return headers
 
 
 def websocket_anonymous_auth() -> bool:
+    if bilibili_require_login():
+        return False
     value = os.environ.get("BILIBILI_WS_ANON")
-    if value is None:
-        return True
-    return value.strip().lower() not in {"0", "false", "no", "off"}
+    if value is not None:
+        return env_truthy(value)
+    return not has_bilibili_login_hint()
 
 
-def auth_packet(room_id: int, token: str, *, anonymous: bool = False) -> bytes:
+def has_bilibili_login_hint() -> bool:
+    return bool(
+        current_bilibili_cookie()
+        or os.environ.get("BILIBILI_UID")
+        or os.environ.get("BILIBILI_BUVID")
+    )
+
+
+def env_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_disabled(name: str) -> bool:
+    value = os.environ.get(name)
+    return value is not None and value.strip().lower() in {"0", "false", "no", "off"}
+
+
+def bilibili_require_login() -> bool:
+    return env_truthy(os.environ.get("BILIBILI_REQUIRE_LOGIN", ""))
+
+
+def ensure_bilibili_cookie_loaded(*, force: bool = False) -> str:
+    global _BROWSER_COOKIE_LOADED
+    source = os.environ.get("BILIBILI_COOKIE_SOURCE", "auto").strip().lower()
+    if source not in {"browser", "devtools", "auto"}:
+        return current_bilibili_cookie()
+    if _BROWSER_COOKIE_LOADED and not force:
+        return current_bilibili_cookie()
+    if source == "auto" and current_bilibili_cookie() and not force:
+        _BROWSER_COOKIE_LOADED = True
+        return current_bilibili_cookie()
+
+    cookie, source_name = load_bilibili_cookie_from_configured_source(source)
+    if cookie:
+        os.environ["BILIBILI_COOKIE"] = cookie
+        os.environ["BILIBILI_COOKIE_LOADED_FROM"] = source_name
+    _BROWSER_COOKIE_LOADED = True
+    return current_bilibili_cookie()
+
+
+def current_bilibili_cookie() -> str:
+    parts = []
+    for env_name, cookie_name in BILIBILI_COOKIE_ENV_PARTS:
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            parts.append(f"{cookie_name}={normalize_cookie_value(value)}")
+    if parts:
+        return "; ".join(parts)
+    return os.environ.get("BILIBILI_COOKIE", "").strip()
+
+
+def normalize_cookie_value(value: str) -> str:
+    # Chrome can copy cookie values either raw (`%2C`) or URL-decoded (`,`).
+    # HTTP Cookie headers should use the raw escaped form for Bilibili auth.
+    return quote(value.strip(), safe="%._~-")
+
+
+def load_bilibili_cookie_from_configured_source(source: str) -> tuple[str, str]:
+    if source == "devtools":
+        cookie, source_name = load_devtools_bilibili_cookie()
+        if not cookie:
+            raise RuntimeError("Could not load Bilibili cookies from DevTools. Is the login browser running?")
+        return cookie, source_name
+    if source == "browser":
+        cookie, browser_name = load_browser_bilibili_cookie()
+        return cookie, f"browser:{browser_name}" if cookie else ""
+
+    cookie, source_name = load_devtools_bilibili_cookie()
+    if cookie:
+        return cookie, source_name
+    cookie, browser_name = load_browser_bilibili_cookie()
+    return (cookie, f"browser:{browser_name}") if cookie else ("", "")
+
+
+def load_devtools_bilibili_cookie(timeout: float = 5.0) -> tuple[str, str]:
+    base_url = os.environ.get("BILIBILI_DEVTOOLS_URL", "http://127.0.0.1:9222").rstrip("/")
+    try:
+        ws_urls = devtools_websocket_urls(base_url, timeout=timeout)
+    except RuntimeError:
+        return "", ""
+
+    errors: list[str] = []
+    for ws_url in ws_urls:
+        try:
+            cookies = devtools_get_all_cookies(ws_url, timeout=timeout)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            continue
+        cookie_header = cookie_header_from_browser_rows(cookies)
+        if "SESSDATA=" in cookie_header and "DedeUserID=" in cookie_header:
+            return cookie_header, "devtools"
+    if os.environ.get("BILIBILI_COOKIE_SOURCE", "").strip().lower() == "devtools" and errors:
+        raise RuntimeError(f"Could not load Bilibili cookies from DevTools: {'; '.join(errors[-3:])}")
+    return "", ""
+
+
+def devtools_websocket_urls(base_url: str, *, timeout: float) -> list[str]:
+    urls: list[str] = []
+    last_error: object = "no websocket targets"
+    for endpoint in ("/json/version", "/json/list"):
+        try:
+            with urlopen(f"{base_url}{endpoint}", timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            last_error = exc
+            continue
+        rows = data if isinstance(data, list) else [data]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ws_url = str(row.get("webSocketDebuggerUrl") or "")
+            if ws_url and ws_url not in urls:
+                urls.append(ws_url)
+    if not urls:
+        raise RuntimeError(f"DevTools is not available at {base_url}: {last_error!r}")
+    return urls
+
+
+def devtools_get_all_cookies(ws_url: str, *, timeout: float) -> list[dict]:
+    try:
+        import websocket
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "BILIBILI_COOKIE_SOURCE=devtools requires websocket-client. "
+            "Install it with `.venv\\Scripts\\python.exe -m pip install websocket-client`."
+        ) from exc
+    try:
+        connection = websocket.create_connection(ws_url, timeout=timeout, origin="http://127.0.0.1")
+    except Exception as exc:
+        raise RuntimeError(f"DevTools websocket connection failed: {exc}") from exc
+    try:
+        errors: list[str] = []
+        for request_id, method in enumerate(("Network.getAllCookies", "Storage.getCookies"), start=1):
+            request = {"id": request_id, "method": method}
+            connection.send(json.dumps(request, separators=(",", ":")))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                message = json.loads(connection.recv())
+                if message.get("id") != request_id:
+                    continue
+                if "error" in message:
+                    errors.append(f"{method}: {message['error']}")
+                    break
+                result = message.get("result") if isinstance(message.get("result"), dict) else {}
+                cookies = result.get("cookies")
+                return cookies if isinstance(cookies, list) else []
+        raise RuntimeError(f"DevTools cookie request failed: {'; '.join(errors)}")
+    finally:
+        connection.close()
+
+
+def cookie_header_from_browser_rows(rows: list[dict]) -> str:
+    cookies: dict[str, str] = {}
+    for row in rows:
+        domain = str(row.get("domain") or "")
+        name = str(row.get("name") or "")
+        value = str(row.get("value") or "")
+        if "bilibili.com" not in domain or not name or not value:
+            continue
+        if name in BROWSER_COOKIE_NAMES or name.startswith("bili_"):
+            cookies[name] = value
+    return "; ".join(f"{name}={value}" for name, value in sorted(cookies.items()))
+
+
+def load_browser_bilibili_cookie() -> tuple[str, str]:
+    try:
+        import browser_cookie3
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "BILIBILI_COOKIE_SOURCE=browser requires browser-cookie3. "
+            "Install it with `.venv\\Scripts\\python.exe -m pip install browser-cookie3`."
+        ) from exc
+
+    requested = os.environ.get("BILIBILI_COOKIE_BROWSER", "auto").strip().lower()
+    browser_names = [requested] if requested != "auto" else ["edge", "chrome", "firefox"]
+    domains = (".bilibili.com", "bilibili.com", "live.bilibili.com")
+    errors: list[str] = []
+    for browser_name in browser_names:
+        getter = getattr(browser_cookie3, browser_name, None)
+        if getter is None:
+            errors.append(f"{browser_name}: unsupported browser")
+            continue
+        cookies: dict[str, str] = {}
+        for domain in domains:
+            try:
+                jar = getter(domain_name=domain)
+            except Exception as exc:  # browser_cookie3 raises browser-specific errors.
+                errors.append(f"{browser_name}:{domain}: {exc}")
+                continue
+            for cookie in jar:
+                if "bilibili.com" not in str(cookie.domain):
+                    continue
+                if cookie.name in BROWSER_COOKIE_NAMES or cookie.name.startswith("bili_"):
+                    cookies[cookie.name] = cookie.value
+        if "SESSDATA" in cookies and ("DedeUserID" in cookies or "buvid3" in cookies):
+            return "; ".join(f"{name}={value}" for name, value in sorted(cookies.items())), browser_name
+    if os.environ.get("BILIBILI_COOKIE_SOURCE", "").strip().lower() == "browser":
+        detail = "; ".join(errors[-5:]) if errors else "no Bilibili login cookie found"
+        raise RuntimeError(f"Could not load Bilibili cookies from browser: {detail}")
+    return "", ""
+
+
+def resolve_bilibili_auth(*, timeout: float = 10.0) -> BilibiliAuthConfig:
+    ensure_bilibili_cookie_loaded()
+    anonymous = websocket_anonymous_auth()
+    cookie = current_bilibili_cookie()
+    if anonymous:
+        return anonymous_bilibili_auth_config(cookie_present=bool(cookie))
+
+    uid, uid_source = bilibili_uid(timeout=timeout)
+    buvid, buvid_source = bilibili_buvid(timeout=timeout)
+    if buvid and not os.environ.get("BILIBILI_BUVID"):
+        os.environ["BILIBILI_BUVID"] = buvid
+    return BilibiliAuthConfig(
+        anonymous=False,
+        cookie_present=bool(cookie),
+        uid=uid,
+        uid_source=uid_source,
+        buvid=buvid,
+        buvid_source=buvid_source,
+    )
+
+
+def anonymous_bilibili_auth_config(*, cookie_present: bool) -> BilibiliAuthConfig:
+    return BilibiliAuthConfig(
+        anonymous=True,
+        cookie_present=cookie_present,
+        uid=0,
+        uid_source="anonymous",
+        buvid="",
+        buvid_source="anonymous",
+    )
+
+
+def bilibili_uid(*, timeout: float = 10.0) -> tuple[int, str]:
+    cookie = current_bilibili_cookie()
+    uid = parse_int(cookie_value(cookie, "DedeUserID"))
+    if uid is not None:
+        return uid, "cookie"
+    uid = parse_int(os.environ.get("BILIBILI_UID"))
+    if uid is not None:
+        return uid, "env"
+    if cookie:
+        uid = fetch_logged_in_uid(timeout=timeout)
+        if uid is not None:
+            return uid, "nav"
+    return 0, "missing"
+
+
+def fetch_logged_in_uid(*, timeout: float = 10.0) -> int | None:
+    try:
+        data = http_json(BILIBILI_NAV_URL, timeout=timeout, use_cookie=True)
+    except RuntimeError:
+        return None
+    if data.get("code") != 0:
+        return None
+    nav_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return parse_int(nav_data.get("mid"))
+
+
+def get_bilibili_login_status(*, timeout: float = 10.0) -> dict:
+    ensure_bilibili_cookie_loaded()
+    data = http_json(BILIBILI_NAV_URL, timeout=timeout, use_cookie=True)
+    if not (((data.get("data") or {}) if isinstance(data, dict) else {}).get("isLogin")):
+        source = os.environ.get("BILIBILI_COOKIE_SOURCE", "auto").strip().lower()
+        loaded_from = os.environ.get("BILIBILI_COOKIE_LOADED_FROM", "")
+        if source == "auto" and loaded_from not in {"devtools"} and not loaded_from.startswith("browser:"):
+            ensure_bilibili_cookie_loaded(force=True)
+            data = http_json(BILIBILI_NAV_URL, timeout=timeout, use_cookie=True)
+    if data.get("code") != 0:
+        return {"ok": False, "message": data.get("message") or data}
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return {
+        "ok": bool(payload.get("isLogin")),
+        "mid": parse_int(payload.get("mid")) or 0,
+        "uname": str(payload.get("uname") or ""),
+        "cookie_loaded_from": os.environ.get("BILIBILI_COOKIE_LOADED_FROM") or "env",
+    }
+
+
+def bilibili_buvid(*, timeout: float = 10.0) -> tuple[str, str]:
+    cookie = current_bilibili_cookie()
+    for name in ("buvid3", "LIVE_BUVID", "buvid4", "buvid_fp"):
+        value = cookie_value(cookie, name)
+        if value:
+            return value, f"cookie:{name}"
+
+    env_value = os.environ.get("BILIBILI_BUVID", "").strip()
+    if env_value:
+        return env_value, "env"
+
+    if not env_disabled("BILIBILI_AUTO_BUVID"):
+        fetched = fetch_buvid(timeout=timeout)
+        if fetched:
+            return fetched, "api"
+    return "", "missing"
+
+
+def fetch_buvid(*, timeout: float = 10.0) -> str:
+    for url, keys in (
+        (BILIBILI_BUVID_SPI_URL, ("b_3",)),
+        (BILIBILI_GET_BUVID_URL, ("buvid",)),
+    ):
+        try:
+            data = http_json(url, timeout=timeout, use_cookie=False)
+        except RuntimeError:
+            continue
+        if data.get("code") != 0:
+            continue
+        payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+        for key in keys:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def auth_packet(
+    room_id: int,
+    token: str,
+    *,
+    auth: BilibiliAuthConfig | None = None,
+    anonymous: bool = False,
+) -> bytes:
+    if auth is None:
+        auth = resolve_bilibili_auth() if not anonymous else BilibiliAuthConfig(
+            anonymous=True,
+            cookie_present=bool(current_bilibili_cookie()),
+            uid=0,
+            uid_source="anonymous",
+            buvid="",
+            buvid_source="anonymous",
+        )
     body = {
-        "uid": 0 if anonymous else parse_int(os.environ.get("BILIBILI_UID")) or 0,
+        "uid": 0 if auth.anonymous else auth.uid,
         "roomid": room_id,
-        "protover": PROTO_BROTLI,
-        "buvid": "" if anonymous else os.environ.get("BILIBILI_BUVID") or buvid_from_cookie(os.environ.get("BILIBILI_COOKIE", "")),
+        "protover": requested_protover(),
+        "buvid": "" if auth.anonymous else auth.buvid,
         "platform": "web",
         "type": 2,
         "key": token,
     }
     return pack_packet(OP_AUTH, json.dumps(body, separators=(",", ":")).encode("utf-8"), protover=PROTO_NORMAL)
+
+
+def requested_protover() -> int:
+    value = os.environ.get("BILIBILI_PROTO_VER") or os.environ.get("BILIBILI_PROTO")
+    parsed = parse_int(value)
+    if parsed in {PROTO_NORMAL, PROTO_ZLIB, PROTO_BROTLI}:
+        return parsed
+    return PROTO_ZLIB
 
 
 def pack_packet(operation: int, body: bytes = b"", *, protover: int = PROTO_NORMAL, sequence: int = 1) -> bytes:
@@ -465,5 +880,12 @@ def clean_wbi_value(value: object) -> str:
 
 
 def buvid_from_cookie(cookie: str) -> str:
-    match = re.search(r"(?:^|;\s*)buvid3=([^;]+)", cookie)
-    return match.group(1) if match else ""
+    return cookie_value(cookie, "buvid3")
+
+
+def cookie_value(cookie: str, name: str) -> str:
+    pattern = rf"(?:^|;\s*){re.escape(name)}=([^;]+)"
+    match = re.search(pattern, cookie)
+    if not match:
+        return ""
+    return unquote(match.group(1).strip())

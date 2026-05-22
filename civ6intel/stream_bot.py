@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +16,7 @@ from .bilibili_live import (
     GiftEvent,
     SuperChatEvent,
     command_name,
+    get_bilibili_login_status,
     get_danmaku_history,
     get_room_info,
     iter_live_commands,
@@ -33,8 +36,37 @@ from .state import load_snapshot
 DEFAULT_ANSWER_CHAR_LIMIT = 300
 DEFAULT_GIFT_QUESTION_COST = 100
 GIFT_COIN_PER_BATTERY = 100
+DEFAULT_SUPER_CHAT_COIN_MULTIPLIER = GIFT_COIN_PER_BATTERY
 OVERLAY_FINAL_ANSWER_POLL_GRACE_SECONDS = 1.5
 WEBSOCKET_RESTART_DELAY_SECONDS = 3.0
+LLM_DISPLAY_FAILURE_ANSWER = "AI 顾问刚才卡了一下，没有拿到有效回答。请稍后再问一次。"
+UNSAFE_DISPLAY_ANSWER_MARKERS = (
+    "openai",
+    "api error",
+    "no response",
+    "no output",
+    "returned no output text",
+    "could not reach",
+    "request timed out",
+    "timed out",
+    "rate limit",
+    "quota",
+    "insufficient_quota",
+    "running out",
+    "traceback",
+    "exception",
+    "http",
+)
+
+
+def print(*values: object, **kwargs: object) -> None:
+    file = kwargs.get("file") or sys.stdout
+    encoding = getattr(file, "encoding", None) or "utf-8"
+    safe_values = [
+        str(value).encode(encoding, errors="replace").decode(encoding, errors="replace")
+        for value in values
+    ]
+    builtins.print(*safe_values, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -170,6 +202,41 @@ class GiftLedger:
         self.write_obs_text()
         return self.latest_line
 
+    def record_super_chat(self, event: SuperChatEvent) -> str:
+        event_key = super_chat_event_key(event)
+        if event_key in self.seen_gifts:
+            self.latest_line = f"重复 SC 已忽略：{event.uname or event.uid}"
+            self.write_obs_text()
+            return self.latest_line
+        self.seen_gifts.add(event_key)
+        uid = str(event.uid)
+        amount = super_chat_coin_value(event)
+        account = self.accounts.setdefault(
+            uid,
+            {
+                "uid": event.uid,
+                "uname": event.uname or f"uid {event.uid}",
+                "total_coin": 0,
+                "spent_coin": 0,
+                "gift_count": 0,
+                "last_gift": "",
+                "last_gift_at": "",
+            },
+        )
+        if event.uname:
+            account["uname"] = event.uname
+        account["total_coin"] = int(account.get("total_coin") or 0) + amount
+        account["gift_count"] = int(account.get("gift_count") or 0) + 1
+        account["last_gift"] = "醒目留言"
+        account["last_gift_at"] = current_timestamp()
+        self.append_super_chat_log(event, amount)
+        self.save()
+        balance = self.balance_for(event.uid)
+        credits = balance // self.question_cost
+        self.latest_line = f"{account['uname']} +SC，剩余 {credits}问"
+        self.write_obs_text()
+        return self.latest_line
+
     def append_log(self, gift: GiftEvent, amount: int) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         row = {
@@ -183,6 +250,24 @@ class GiftLedger:
             "price": gift.price,
             "total_coin": amount,
             "coin_type": gift.coin_type,
+        }
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def append_super_chat_log(self, event: SuperChatEvent, amount: int) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "time": current_timestamp(),
+            "source": command_name(event.raw),
+            "uid": event.uid,
+            "uname": event.uname,
+            "gift_name": "醒目留言",
+            "gift_id": None,
+            "num": 1,
+            "price": event.price,
+            "total_coin": amount,
+            "coin_type": "super_chat",
+            "message": event.message,
         }
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -300,6 +385,23 @@ async def run_bilibili_obs_bot(
 ) -> None:
     load_env_file(env_file)
     gift_question_cost = resolve_gift_question_cost(gift_question_cost)
+    login_uid = 0
+    try:
+        login_status = get_bilibili_login_status(timeout=llm_timeout)
+        if login_status.get("ok"):
+            login_uid = int(login_status.get("mid") or 0)
+            print(f"Bilibili login: ok; cookie_source={login_status.get('cookie_loaded_from') or 'env'}")
+        else:
+            print("warning: Bilibili login cookie is missing or expired; full uid/usernames may be unavailable.")
+            if os.environ.get("BILIBILI_REQUIRE_LOGIN", "").strip().lower() in {"1", "true", "yes", "on"}:
+                raise RuntimeError("Bilibili login is required. Start scripts\\bili_login_browser.ps1 and log in first.")
+    except RuntimeError as exc:
+        if os.environ.get("BILIBILI_REQUIRE_LOGIN", "").strip().lower() in {"1", "true", "yes", "on"}:
+            raise
+        print(f"warning: could not validate Bilibili login cookie: {exc}")
+    free_question_uids = resolve_free_question_uids(login_uid=login_uid)
+    if require_gift_credit and free_question_uids:
+        print(f"Free question bypass enabled for {len(free_question_uids)} uid(s).")
     resolved_room_id: int | None = None
     try:
         resolved_room_id = resolve_room_id(room)
@@ -358,6 +460,7 @@ async def run_bilibili_obs_bot(
                 gate=gate,
                 gift_ledger=gift_ledger,
                 require_gift_credit=require_gift_credit,
+                free_question_uids=free_question_uids,
                 question_mode=question_mode,
                 interval=history_interval,
                 debug_danmaku=debug_danmaku,
@@ -398,6 +501,8 @@ async def run_bilibili_obs_bot(
                     if debug_commands:
                         print(f"received command: {command_debug_line(command, include_json=debug_command_json)}")
                     if cmd_name.startswith("__"):
+                        if debug_danmaku and not debug_commands:
+                            print(f"received command: {command_debug_line(command, include_json=False)}")
                         continue
                     gift = parse_gift(command)
                     if gift:
@@ -408,6 +513,24 @@ async def run_bilibili_obs_bot(
                         continue
                     super_chat = parse_super_chat(command)
                     if super_chat and allow_super_chat:
+                        super_chat_key = super_chat_event_key(super_chat)
+                        duplicate_super_chat = super_chat_key in gift_ledger.seen_gifts
+                        print(format_super_chat_event(super_chat))
+                        print(f"gift ledger: {gift_ledger.record_super_chat(super_chat)}")
+                        if duplicate_super_chat:
+                            continue
+                        if require_gift_credit:
+                            spent, balance = gift_ledger.spend_question(super_chat.uid, super_chat.uname)
+                            if not spent:
+                                print(
+                                    f"ignored unpaid super chat from {super_chat.uname}: {super_chat.message} "
+                                    f"(balance {balance}/{gift_ledger.question_cost} coin)"
+                                )
+                                continue
+                            print(
+                                f"super chat credit accepted: {super_chat.uname} spent "
+                                f"{gift_ledger.question_cost} coin; balance {balance} coin"
+                            )
                         await queue.put(super_chat_question(super_chat))
                         print(f"accepted super chat: {super_chat.uname}: {super_chat.message}")
                         continue
@@ -415,12 +538,9 @@ async def run_bilibili_obs_bot(
                     if not danmaku:
                         continue
                     if history_poll and not websocket_danmaku:
-                        if debug_danmaku:
-                            print(
-                                "ignored websocket danmaku because history polling is enabled "
-                                f"and has better usernames: {danmaku.uname}({danmaku.uid}): {danmaku.text}"
-                            )
                         continue
+                    if debug_danmaku:
+                        print_danmaku_debug(danmaku, "websocket")
                     await handle_danmaku(
                         danmaku,
                         seen_danmaku=seen_danmaku,
@@ -428,8 +548,9 @@ async def run_bilibili_obs_bot(
                         gate=gate,
                         gift_ledger=gift_ledger,
                         require_gift_credit=require_gift_credit,
+                        free_question_uids=free_question_uids,
                         question_mode=question_mode,
-                        debug_danmaku=debug_danmaku,
+                        debug_danmaku=False,
                     )
             finally:
                 if command_iter is not None:
@@ -470,6 +591,7 @@ async def danmaku_history_worker(
     gate: GiftGate,
     gift_ledger: GiftLedger,
     require_gift_credit: bool,
+    free_question_uids: set[int],
     question_mode: str,
     interval: float,
     debug_danmaku: bool,
@@ -485,6 +607,7 @@ async def danmaku_history_worker(
                     gate=gate,
                     gift_ledger=gift_ledger,
                     require_gift_credit=require_gift_credit,
+                    free_question_uids=free_question_uids,
                     question_mode=question_mode,
                     debug_danmaku=debug_danmaku,
                 )
@@ -502,6 +625,8 @@ def seed_danmaku_history(room_id: int, seen_danmaku: set[str], *, debug: bool) -
             print(f"danmaku history seed failed: {exc}")
         return
     for danmaku in history:
+        if debug:
+            print_danmaku_debug(danmaku, "history:seed")
         seen_danmaku.add(danmaku_key(danmaku))
     if debug:
         print(f"seeded {len(history)} existing danmaku from history")
@@ -515,6 +640,7 @@ async def handle_danmaku(
     gate: GiftGate,
     gift_ledger: GiftLedger,
     require_gift_credit: bool,
+    free_question_uids: set[int],
     question_mode: str,
     debug_danmaku: bool,
 ) -> None:
@@ -530,13 +656,12 @@ async def handle_danmaku(
     if debug_danmaku:
         print(f"danmaku[{source_text}]: {danmaku.uname}({danmaku.uid}): {danmaku.text}")
     if not is_question(danmaku.text, question_mode):
-        if debug_danmaku:
-            print(f"ignored non-question danmaku from {danmaku.uname}: {danmaku.text}")
         return
-    if not gate.allow(danmaku.uid):
+    is_free_question = danmaku.uid in free_question_uids
+    if not is_free_question and not gate.allow(danmaku.uid):
         print(f"ignored gated question from {danmaku.uname}: {danmaku.text}")
         return
-    if require_gift_credit:
+    if require_gift_credit and not is_free_question:
         spent, balance = gift_ledger.spend_question(danmaku.uid, danmaku.uname)
         if not spent:
             print(
@@ -548,6 +673,8 @@ async def handle_danmaku(
             f"gift credit accepted: {danmaku.uname} spent {gift_ledger.question_cost} coin; "
             f"balance {balance} coin"
         )
+    elif require_gift_credit and is_free_question:
+        print(f"free question accepted: {danmaku.uname}({danmaku.uid})")
     await queue.put(danmaku_question(danmaku))
     print(f"accepted question: {danmaku.uname}: {danmaku.text}")
 
@@ -563,6 +690,11 @@ def danmaku_key(danmaku: DanmakuEvent) -> str:
     timestamp = meta[4] if len(meta) > 4 else ""
     nonce = meta[7] if len(meta) > 7 else ""
     return f"ws:{timestamp}:{nonce}:{danmaku.uid}:{danmaku.uname}:{danmaku.text}"
+
+
+def print_danmaku_debug(danmaku: DanmakuEvent, source_text: str) -> None:
+    uname = danmaku.uname or "unknown"
+    print(f"danmaku[{source_text}]: {uname}({danmaku.uid}): {danmaku.text}")
 
 
 def gift_event_key(gift: GiftEvent) -> str:
@@ -581,6 +713,18 @@ def gift_event_key(gift: GiftEvent) -> str:
     if nested_keys:
         return f"{command_name(gift.raw)}:{gift.uid}:{gift.gift_id}:{':'.join(nested_keys)}"
     return f"{command_name(gift.raw)}:{gift.uid}:{gift.gift_id}:{gift.gift_name}:{gift.num}:{gift.total_coin}:{int(time.time())}"
+
+
+def super_chat_event_key(event: SuperChatEvent) -> str:
+    data = event.raw.get("data") if isinstance(event.raw.get("data"), dict) else {}
+    stable_parts = []
+    for key in ("id", "id_str", "message_id", "token", "start_time", "ts", "time"):
+        value = data.get(key)
+        if value not in (None, ""):
+            stable_parts.append(str(value))
+    if stable_parts:
+        return f"{command_name(event.raw)}:{event.uid}:{':'.join(stable_parts)}"
+    return f"{command_name(event.raw)}:{event.uid}:{event.price}:{event.message}:{int(time.time())}"
 
 
 async def obs_news_worker(
@@ -648,8 +792,12 @@ async def answer_worker(
                     context_limit,
                 )
         except LLMError as exc:
-            answer = f"暂时无法回答：{exc}"
+            print(f"llm error for {question.uname}: {exc}")
+            answer = LLM_DISPLAY_FAILURE_ANSWER
         answer = sanitize_llm_output(answer, max_chars=answer_char_limit)
+        if is_unsafe_display_answer(answer):
+            print(f"suppressed unsafe OBS answer for {question.uname}: {answer}")
+            answer = LLM_DISPLAY_FAILURE_ANSWER
         write_obs_text(obs_text, format_obs_text(question, answer))
         if overlay_writer is not None:
             overlay_writer.set_answer(question.uname, question.text, answer, paid=question.paid)
@@ -696,9 +844,43 @@ def resolve_gift_question_cost(value: int | None) -> int:
     return DEFAULT_GIFT_QUESTION_COST
 
 
+def resolve_free_question_uids(*, login_uid: int = 0) -> set[int]:
+    uids: set[int] = set()
+    if login_uid > 0:
+        uids.add(login_uid)
+    for env_name in ("BILIBILI_COOKIE_DEDEUSERID", "BILIBILI_UID", "CIV6_FREE_QUESTION_UIDS"):
+        raw_value = os.getenv(env_name, "")
+        for token in re.split(r"[\s,;]+", raw_value.strip()):
+            token = token.strip().strip("'\"")
+            if not token:
+                continue
+            try:
+                uid = int(token)
+            except ValueError:
+                print(f"warning: ignoring invalid uid in {env_name}: {token!r}")
+                continue
+            if uid > 0:
+                uids.add(uid)
+    return uids
+
+
 def format_gift_question_cost(coin_cost: int) -> str:
     batteries = coin_cost / GIFT_COIN_PER_BATTERY
     return f"{batteries:g}电池"
+
+
+def super_chat_coin_value(event: SuperChatEvent) -> int:
+    multiplier = DEFAULT_SUPER_CHAT_COIN_MULTIPLIER
+    env_value = os.getenv("CIV6_SUPER_CHAT_COIN_MULTIPLIER", "").strip()
+    if env_value:
+        try:
+            multiplier = max(int(env_value), 1)
+        except ValueError:
+            print(
+                f"warning: invalid CIV6_SUPER_CHAT_COIN_MULTIPLIER={env_value!r}; "
+                f"using {DEFAULT_SUPER_CHAT_COIN_MULTIPLIER}"
+            )
+    return max(event.price, 0) * multiplier
 
 
 def danmaku_question(event: DanmakuEvent) -> ChatQuestion:
@@ -761,6 +943,11 @@ def sanitize_llm_output(text: str, *, max_chars: int = DEFAULT_ANSWER_CHAR_LIMIT
     if max_chars > 0 and len(text) > max_chars:
         text = text[: max_chars - 1].rstrip("，。；、：,.;: ") + "…"
     return text
+
+
+def is_unsafe_display_answer(text: str) -> bool:
+    normalized = text.casefold()
+    return any(marker in normalized for marker in UNSAFE_DISPLAY_ANSWER_MARKERS)
 
 
 def strip_markdown(text: str) -> str:
@@ -847,6 +1034,13 @@ def format_gift_event(gift: GiftEvent) -> str:
     value = f"; total_coin={gift.total_coin}" if gift.total_coin else ""
     gift_id = f"; id={gift.gift_id}" if gift.gift_id is not None else ""
     return f"gift[{source}]: {user}({gift.uid}) sent {gift.gift_name} x{gift.num}{gift_id}{value}"
+
+
+def format_super_chat_event(event: SuperChatEvent) -> str:
+    source = command_name(event.raw)
+    user = event.uname or f"uid {event.uid}"
+    value = super_chat_coin_value(event)
+    return f"gift[{source}]: {user}({event.uid}) sent SC {event.price}电池; total_coin={value}"
 
 
 def room_status_description(room_id: int, room_info: dict) -> str:

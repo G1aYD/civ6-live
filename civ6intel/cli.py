@@ -7,11 +7,12 @@ import sys
 from pathlib import Path
 
 from .archive import inspect_logs
+from .bilibili_live import get_bilibili_login_status, get_danmaku_info, resolve_bilibili_auth, resolve_room_id
 from .config import load_paths
 from .events import format_events, human_live_events
 from .llm_client import DEFAULT_OPENAI_MODEL, LLMError, ask_openai, load_env_file
 from .llm_context import direct_game_answer, llm_context_json, llm_context_prompt
-from .obs_news import run_obs_news
+from .obs_news import check_leader_icons, format_icon_check_report, run_obs_news
 from .overlay_http import run_overlay_server, start_overlay_server
 from .overlay_state import run_overlay_json
 from .query import answer_question, context_json
@@ -137,6 +138,18 @@ def main(argv: list[str] | None = None) -> int:
     news_parser.add_argument("--separator", default="\n", help="Separator between ticker items. Default: newline.")
     news_parser.add_argument("--once", action="store_true", help="Write one ticker snapshot and exit.")
     news_parser.add_argument("--duration", type=float, help="Stop after this many seconds.")
+
+    icon_parser = subparsers.add_parser("check-icons", help="Check BBG leader image URLs for the current game.")
+    icon_parser.add_argument("--timeout", type=float, default=5.0, help="GitHub API timeout in seconds.")
+    icon_parser.add_argument("--offline", action="store_true", help="Only print computed filenames and URLs; do not call GitHub.")
+    icon_parser.add_argument("--all", action="store_true", help="Check all human-playable leaders in Civ 6's merged configuration database.")
+
+    bili_check_parser = subparsers.add_parser("bili-check", help="Check Bilibili room, auth, and danmaku websocket setup.")
+    bili_check_parser.add_argument("--room", default="https://live.bilibili.com/8555868", help="Bilibili room URL or id.")
+    bili_check_parser.add_argument("--env-file", default=".env", help="File containing Bilibili cookie settings.")
+    bili_check_parser.add_argument("--timeout", type=float, default=10.0, help="Bilibili request timeout in seconds.")
+    bili_check_parser.add_argument("--bili-default-ws", action="store_true", help="Use the default broadcast websocket when checking.")
+    bili_check_parser.add_argument("--bili-host-ws", action="store_true", help="Use the first websocket host returned by getDanmuInfo.")
 
     overlay_parser = subparsers.add_parser("obs-overlay", help="Write an OBS browser overlay JSON file.")
     overlay_parser.add_argument("--overlay-json", default="obs/overlay.json", help="JSON file consumed by overlay HTML.")
@@ -305,6 +318,42 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "check-icons":
+        rows = check_leader_icons(paths, timeout=args.timeout, offline=args.offline, all_known=args.all)
+        print(console_safe_text(format_icon_check_report(rows)))
+        return 1 if any(row.get("status") == "missing" for row in rows) else 0
+
+    if args.command == "bili-check":
+        load_env_file(args.env_file)
+        room_id = resolve_room_id(args.room, timeout=args.timeout)
+        try:
+            auth = resolve_bilibili_auth(timeout=args.timeout)
+            login = get_bilibili_login_status(timeout=args.timeout)
+        except RuntimeError as exc:
+            print(console_safe_text(f"room_id: {room_id}\nlogin: failed\nerror: {exc}"))
+            return 1
+        ws_url, token = get_danmaku_info(
+            room_id,
+            timeout=args.timeout,
+            force_default_ws=args.bili_default_ws or not args.bili_host_ws,
+            use_cookie=not auth.anonymous,
+        )
+        lines = [
+            f"room_id: {room_id}",
+            f"login: {'ok' if login.get('ok') else 'not logged in'}; cookie_source={login.get('cookie_loaded_from') or 'env'}",
+            f"auth: {auth.summary()}",
+            f"websocket: {ws_url}",
+            f"danmaku token: {'ok' if token else 'missing'}",
+        ]
+        if login.get("ok") and login.get("mid") and auth.uid and login.get("mid") != auth.uid:
+            lines.append("warning: cookie login uid and websocket uid do not match.")
+        if not auth.anonymous and (not auth.uid or not auth.buvid):
+            lines.append("warning: logged-in auth is missing uid or buvid; websocket may be unstable.")
+        if not login.get("ok"):
+            lines.append("warning: Bilibili cookie is missing, expired, or not readable.")
+        print(console_safe_text("\n".join(lines)))
+        return 0 if token and login.get("ok") and (auth.anonymous or (auth.uid and auth.buvid)) else 1
+
     if args.command == "obs-overlay":
         run_overlay_json(
             paths,
@@ -339,6 +388,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"Unknown command {args.command}")
     return 2
+
+
+def console_safe_text(text: str) -> str:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ function Import-DotEnv {
         $Name = $Parts[0].Trim()
         $Value = $Parts[1].Trim()
 
-        if (-not $Name -or [Environment]::GetEnvironmentVariable($Name, "Process")) {
+        if (-not $Name) {
             continue
         }
 
@@ -75,6 +75,17 @@ function Test-EnvTrue {
 
     $Value = [Environment]::GetEnvironmentVariable($EnvName, "Process")
     return $Value -match "^(1|true|yes|on)$"
+}
+
+foreach ($Name in @(
+    "BILIBILI_COOKIE",
+    "BILIBILI_UID",
+    "BILIBILI_BUVID",
+    "BILIBILI_AUTO_BUVID",
+    "BILIBILI_COOKIE_BROWSER",
+    "BILIBILI_DEVTOOLS_URL"
+)) {
+    [Environment]::SetEnvironmentVariable($Name, $null, "Process")
 }
 
 Import-DotEnv ".env"
