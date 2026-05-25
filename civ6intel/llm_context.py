@@ -32,6 +32,75 @@ CITY_STATE_RE = re.compile(
     r"Leader\s+-\s+(?P<leader>LEADER_MINOR_CIV_[A-Z0-9_]+).*?"
     r"Level\s+-\s+CIVILIZATION_LEVEL_CITY_STATE"
 )
+G_CHRONICLES_PATH = Path(__file__).with_name("g_chronicles.txt")
+G_CHRONICLES_TRIGGERS = (
+    "glayd",
+    "glaid",
+    "g史记",
+    "g神",
+    "g鳖",
+    "g宝",
+    "gla",
+    "主播",
+    "以弗所",
+    "必得",
+)
+CURRENT_GAME_KEYWORDS = (
+    "当前",
+    "现在",
+    "本局",
+    "这局",
+    "比赛",
+    "文明",
+    "领袖",
+    "玩家",
+    "队伍",
+    "几队",
+    "回合",
+    "金币",
+    "回合金",
+    "现金",
+    "科技",
+    "文化",
+    "产能",
+    "粮",
+    "信仰",
+    "旅游",
+    "胜利",
+    "宗教",
+    "外交",
+    "城邦",
+    "奇观",
+    "伟人",
+    "大科",
+    "大工",
+    "大商",
+    "大军",
+    "总督",
+    "城市",
+    "首都",
+    "学院",
+    "剧院",
+    "军营",
+    "骑士",
+    "单位",
+    "兵",
+    "周围",
+    "旁边",
+    "位置",
+    "地块",
+    "奢侈",
+    "战略",
+    "朝鲜",
+    "韩国",
+    "克里",
+    "中国",
+    "波兰",
+    "法国",
+    "刚果",
+    "俄罗斯",
+    "阿拉伯",
+)
 
 OVERLAY_GOLD_NEWS_RE = re.compile(
     r"(?P<turn>\d+)T\s+送出\s+(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+"
@@ -459,21 +528,35 @@ def llm_context_json(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None 
     return json.dumps(build_llm_context(paths, snapshot, turn=turn, limit=limit), ensure_ascii=False, indent=2)
 
 
-def llm_context_prompt(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None = None, limit: int = 30) -> str:
+def llm_context_prompt(
+    paths: Civ6Paths,
+    snapshot: GameSnapshot,
+    turn: int | None = None,
+    limit: int = 30,
+    question: str | None = None,
+) -> str:
     context = build_llm_context(paths, snapshot, turn=turn, limit=limit)
-    return "\n".join(
-        [
-            "以下是文明 6 当前局势 JSON。回答时优先使用 *_zh、display_zh、turn_label 字段。",
-            "JSON 仅供内部理解；面向观众回答时不要提 JSON 字段名、文件名、日志名或“某字段为空”。",
-            "如果问题问谁花钱/送钱/打钱最多，优先看金币摘要和转账总计；若没有转账记录，用经济数据估计，不要回答内部字段为空。",
-            "金币交易必须区分现金和回合金：duration=0/timing=one_time 是一次性现金；duration>0/timing=per_turn 是每回合金币，不要混算。",
-            "金币统计里 totals_sent_desc 只代表一次性现金；gpt_sent_desc 只代表回合金。",
-            "",
-            "```json",
-            json.dumps(context, ensure_ascii=False, separators=(",", ":")),
-            "```",
-        ]
-    )
+    sections = [
+        "以下是文明 6 当前局势 JSON。回答时优先使用 *_zh、display_zh、turn_label 字段。",
+        "JSON 仅供内部理解；面向观众回答时不要提 JSON 字段名、文件名、日志名或“某字段为空”。",
+        "如果问题问谁花钱/送钱/打钱最多，优先看金币摘要和转账总计；若没有转账记录，用经济数据估计，不要回答内部字段为空。",
+        "金币交易必须区分现金和回合金：duration=0/timing=one_time 是一次性现金；duration>0/timing=per_turn 是每回合金币，不要混算。",
+        "金币统计里 totals_sent_desc 只代表一次性现金；gpt_sent_desc 只代表回合金。",
+        "",
+        "```json",
+        json.dumps(context, ensure_ascii=False, separators=(",", ":")),
+        "```",
+    ]
+    if should_include_g_chronicles(question):
+        sections.extend(
+            [
+                "",
+                "以下是“G史记”梗资料。仅当观众询问 GLaYD、主播个人梗，或问题与当前比赛局势无直接关系时参考。",
+                "使用时可以幽默，但不要逐字长篇复述；不要把这些历史梗当成当前比赛事实。",
+                load_g_chronicles(),
+            ]
+        )
+    return "\n".join(sections)
 
 
 def build_llm_context(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None = None, limit: int = 30) -> dict:
@@ -517,6 +600,24 @@ def build_llm_context(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None
         "recent_important_events": recent_events_context(paths, limit=limit),
         "warnings": snapshot.warnings,
     }
+
+
+def should_include_g_chronicles(question: str | None) -> bool:
+    if not question:
+        return False
+    normalized = question.casefold()
+    if any(trigger in normalized for trigger in G_CHRONICLES_TRIGGERS):
+        return True
+    return not any(keyword in question for keyword in CURRENT_GAME_KEYWORDS)
+
+
+@lru_cache(maxsize=1)
+def load_g_chronicles() -> str:
+    try:
+        text = G_CHRONICLES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return text.strip()
 
 
 def player_context(snapshot: GameSnapshot, stats: PlayerTurnStats) -> dict:

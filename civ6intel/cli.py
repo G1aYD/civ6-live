@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         if direct_answer and not args.dry_run:
             print(sanitize_llm_output(direct_answer, max_chars=args.answer_char_limit))
             return 0
-        prompt = llm_context_prompt(paths, snapshot, turn=turn, limit=args.limit)
+        prompt = llm_context_prompt(paths, snapshot, turn=turn, limit=args.limit, question=question)
         if args.dry_run:
             print(f"{prompt}\n\n观众问题：{question}")
             return 0

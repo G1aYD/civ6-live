@@ -394,7 +394,10 @@ async def run_bilibili_obs_bot(
         else:
             print("warning: Bilibili login cookie is missing or expired; full uid/usernames may be unavailable.")
             if os.environ.get("BILIBILI_REQUIRE_LOGIN", "").strip().lower() in {"1", "true", "yes", "on"}:
-                raise RuntimeError("Bilibili login is required. Start scripts\\bili_login_browser.ps1 and log in first.")
+                raise RuntimeError(
+                    "Bilibili login is required. Refresh BILIBILI_COOKIE_* in .env, "
+                    "then run `python -m civ6intel.cli bili-check`."
+                )
     except RuntimeError as exc:
         if os.environ.get("BILIBILI_REQUIRE_LOGIN", "").strip().lower() in {"1", "true", "yes", "on"}:
             raise
@@ -819,7 +822,7 @@ def answer_question_with_llm(
     direct_answer = direct_game_answer(paths, snapshot, question)
     if direct_answer:
         return direct_answer
-    prompt = llm_context_prompt(paths, snapshot, turn=None, limit=context_limit)
+    prompt = llm_context_prompt(paths, snapshot, turn=None, limit=context_limit, question=question)
     return ask_openai(
         prompt,
         question,
