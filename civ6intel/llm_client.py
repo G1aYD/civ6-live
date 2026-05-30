@@ -12,6 +12,7 @@ DEFAULT_OPENAI_MODEL = "gpt-5.5"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MAX_OUTPUT_TOKENS = 900
 DEFAULT_OPENAI_REASONING_EFFORT = "low"
+DEFAULT_OPENAI_PROMPT_CACHE_KEY = "civ6-live"
 
 
 class LLMError(RuntimeError):
@@ -59,6 +60,7 @@ def ask_openai(
         "input": f"{prompt}\n\n观众问题：{question}",
         "max_output_tokens": env_int("OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_OPENAI_MAX_OUTPUT_TOKENS),
     }
+    add_prompt_cache_config(payload)
     add_reasoning_config(payload, selected_model)
     using_bbg_web_search = add_bbg_web_search_tool(payload, question)
 
@@ -134,6 +136,7 @@ def post_response(base_url: str, api_key: str, payload: dict, timeout: float) ->
         data = json.loads(response.read().decode("utf-8"))
     if not isinstance(data, dict):
         raise LLMError("OpenAI API returned an unexpected response.")
+    log_openai_usage(data)
     return data
 
 
@@ -177,6 +180,23 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def add_prompt_cache_config(payload: dict) -> None:
+    cache_key = os.environ.get("OPENAI_PROMPT_CACHE_KEY", DEFAULT_OPENAI_PROMPT_CACHE_KEY).strip()
+    if cache_key and cache_key.lower() not in {"0", "false", "no", "off"}:
+        payload["prompt_cache_key"] = cache_key
+
+    retention = os.environ.get("OPENAI_PROMPT_CACHE_RETENTION", "").strip().lower()
+    if retention in {"in_memory", "24h"}:
+        payload["prompt_cache_retention"] = retention
+
+
 def add_reasoning_config(payload: dict, model: str) -> None:
     if not model_supports_reasoning_config(model):
         return
@@ -189,6 +209,64 @@ def add_reasoning_config(payload: dict, model: str) -> None:
 def model_supports_reasoning_config(model: str) -> bool:
     normalized = model.lower()
     return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def log_openai_usage(data: dict) -> None:
+    if not env_bool("OPENAI_LOG_USAGE"):
+        return
+
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return
+
+    input_tokens = usage_token(usage, "input_tokens", "prompt_tokens")
+    output_tokens = usage_token(usage, "output_tokens", "completion_tokens")
+    total_tokens = usage_token(usage, "total_tokens")
+    cached_tokens = nested_usage_token(
+        usage,
+        ("input_tokens_details", "cached_tokens"),
+        ("prompt_tokens_details", "cached_tokens"),
+    )
+    reasoning_tokens = nested_usage_token(
+        usage,
+        ("output_tokens_details", "reasoning_tokens"),
+        ("completion_tokens_details", "reasoning_tokens"),
+    )
+
+    pieces = []
+    if input_tokens is not None:
+        pieces.append(f"input={input_tokens}")
+    if cached_tokens is not None:
+        if input_tokens:
+            pieces.append(f"cached={cached_tokens} ({cached_tokens / input_tokens:.0%})")
+        else:
+            pieces.append(f"cached={cached_tokens}")
+    if output_tokens is not None:
+        pieces.append(f"output={output_tokens}")
+    if reasoning_tokens is not None:
+        pieces.append(f"reasoning={reasoning_tokens}")
+    if total_tokens is not None:
+        pieces.append(f"total={total_tokens}")
+    if pieces:
+        print("openai usage: " + ", ".join(pieces))
+
+
+def usage_token(usage: dict, *keys: str) -> int | None:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def nested_usage_token(usage: dict, *paths: tuple[str, str]) -> int | None:
+    for parent_key, child_key in paths:
+        parent = usage.get(parent_key)
+        if isinstance(parent, dict):
+            value = parent.get(child_key)
+            if isinstance(value, int):
+                return value
+    return None
 
 
 def add_bbg_web_search_tool(payload: dict, question: str) -> bool:

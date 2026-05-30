@@ -63,6 +63,8 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.5
 OPENAI_MAX_OUTPUT_TOKENS=900
 OPENAI_REASONING_EFFORT=low
+OPENAI_PROMPT_CACHE_KEY=civ6-live
+OPENAI_LOG_USAGE=false
 BILIBILI_COOKIE_SESSDATA=...
 BILIBILI_COOKIE_BILI_JCT=...
 BILIBILI_COOKIE_DEDEUSERID=...
@@ -85,6 +87,9 @@ CIV6_HISTORY_INTERVAL=1
 CIV6_NO_HISTORY_POLL=false
 CIV6_WEBSOCKET_DANMAKU=false
 ```
+
+Prompt caching is automatic for long OpenAI prompts. Keep `OPENAI_PROMPT_CACHE_KEY` stable for one
+stream, and set `OPENAI_LOG_USAGE=true` temporarily to print `cached_tokens` after each API response.
 
 For normal live streaming, use the preset PowerShell launcher instead of passing every argument:
 

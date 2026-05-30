@@ -6,7 +6,6 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -569,7 +568,6 @@ def build_llm_context(paths: Civ6Paths, snapshot: GameSnapshot, turn: int | None
 
     return {
         "schema": "civ6intel.llm_context.v1",
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "bbg_reference_url": "https://civ6bbg.github.io/",
         "observer_mode": {
             "enabled": True,
@@ -673,7 +671,6 @@ def save_file_context(paths: Civ6Paths, snapshot: GameSnapshot, limit: int) -> d
         "file": summary.get("file"),
         "turn": summary.get("turn"),
         "turn_label": turn_label(summary.get("turn")),
-        "parse_ms": summary.get("parse_ms"),
         "game_seed": summary.get("game_seed"),
         "major_players": [
             save_player_context(player)
